@@ -1,0 +1,3830 @@
+
+* useful metadata files
+
+#+BEGIN_SRC shell
+
+## /sc/arion/projects/psychgen/lbp/files/sema4_bulk_rna_sample_sheet/Bulk_RNA_Isolation_Mastertable_BRAINANDBLOOD_forSEMA4_awcFormatted.tsv
+
+#+END_SRC
+
+
+* initial construction of "mydata" (R object containing lbp, cmc, hbcc, and ampad data for analysis)
+
+#+BEGIN_SRC R
+
+# setup
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# initiate output 
+  mydata = list("expression_matrices" = list(), "covariates" = list(), "datasets" = list())
+  nonlbp.voom <- list()
+
+# lbp
+  lbp <- readRDS("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/NPP536/lbp_data_for_analysis.RDS")
+  lbp.covlist <- colnames(lbp$covariates$all)[colnames(lbp$covariates$all)!="mymet.postmortem"]
+  lbp.frm <- as.formula(paste("~",paste(colnames(lbp$covariates$all),collapse="+")))
+  mydata[["expression_matrices"]][["lbp"]] = lbp$voomObject$all
+  mydata[["covariates"]][["lbp"]] = lbp$covariates$all
+  mydata[["expression_matrices"]][["lbp"]] = lbp$voomObject$all
+  mydata[["covariates"]][["lbp"]] = lbp$covariates$all
+  mydata[["datasets"]][["lbp"]] = list("expression_matrices" = "lbp",
+                                     "expression_matrices.type" = "voom", 
+                                     "covariates" = "lbp",
+                                     "cov.list" = lbp.covlist,
+                                     "id.col" = "ISM.SEMA4", 
+                                     "phe.col"="mymet.postmortem",
+                                     "id.list"=rownames(lbp$covariates$all),
+                                     "de.formula" = lbp.frm,
+                                     "needsContrast" = FALSE,
+                                     "contrasts" = NA)
+  mydata[["datasets"]][["lbp.pd"]] = list("expression_matrices" = "lbp",
+                                     "expression_matrices.type" = "voom", 
+                                     "covariates" = "lbp",
+                                     "cov.list" = lbp.covlist,
+                                     "id.col" = "ISM.SEMA4", 
+                                     "phe.col"="mymet.postmortem",
+                                     "id.list"=rownames(lbp$covariates$pd),
+                                     "de.formula" = lbp.frm,
+                                     "needsContrast" = FALSE,
+                                     "contrasts" = NA)
+  mydata[["datasets"]][["lbp.npd"]] = list("expression_matrices" = "lbp",
+                                     "expression_matrices.type" = "voom", 
+                                     "covariates" = "lbp",
+                                     "cov.list" = lbp.covlist,
+                                     "id.col" = "ISM.SEMA4", 
+                                     "phe.col"="mymet.postmortem",
+                                     "id.list"=rownames(lbp$covariates$npd),
+                                     "de.formula" = lbp.frm,
+                                     "needsContrast" = FALSE,
+                                     "contrasts" = NA)
+
+
+# hbcc
+  ls=load("/sc/arion/projects/adineto/Noam_forHydra/AMPAD_all_data/schizo/HBCC_PFC/expression/residualsFlowcellBatch_no_outliers.RData")
+  resVP=get(ls)
+  vobj=readRDS("/sc/arion/projects/adineto/Noam_forHydra/AMPAD_all_data/schizo/HBCC_PFC/expression/voom_normalized_counts_no_outliers.RDS")
+  nonlbp.voom$hbc <- vobj  
+  colnames(resVP)=colnames(vobj)
+  rownames(resVP)=rownames(vobj)
+  hbc.cov=readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/HBCC_PFC/covariates/info_all.RDS")
+  hbc.cov[Dx=="Control",scz:=0]
+  hbc.cov[Dx=="Control",bip:=0]
+  hbc.cov[Dx=="SCZ",scz:=1]
+  hbc.cov[Dx=="BP",bip:=1]
+  hbc.covlist = c("RIN", "IntronicRate", "Gender", "Age_of_Death", "PMI", "GenesDetected", "TotalReads", "IntergenicRate")
+  hbc.scz.cov = hbc.cov[!is.na(scz),c("SampleID", "scz", hbc.covlist), with=F]
+  hbc.bip.cov = hbc.cov[!is.na(bip),c("SampleID", "bip", hbc.covlist), with=F]
+  hbc.scz.sid = intersect( as.character(hbc.scz.cov$SampleID), colnames(resVP) )
+  hbc.bip.sid = intersect( as.character(hbc.bip.cov$SampleID), colnames(resVP) )
+  hbc.scz.frm <- as.formula(paste("~ ", paste(c("scz", hbc.covlist), collapse = " + ")))
+  hbc.bip.frm <- as.formula(paste("~ ", paste(c("bip", hbc.covlist), collapse = " + ")))
+  mydata[["expression_matrices"]][["hbc"]] = resVP
+  mydata[["covariates"]][["hbc"]] = hbc.cov
+  mydata[["datasets"]][["hbc|pfc|scz"]] = list("expression_matrices" = "hbc",
+                                               "expression_matrices.type" = "matrix", 
+                                               "covariates" = "hbc",
+                                               "cov.list" = hbc.covlist,
+                                               "id.col" = "SampleID", 
+                                               "phe.col"="scz", 
+                                               "id.list"=hbc.scz.sid,
+                                               "de.formula" = hbc.scz.frm,
+                                               "needsContrast" = FALSE,
+                                               "contrasts" = NA)
+  mydata[["datasets"]][["hbc|pfc|bip"]] = list("expression_matrices" = "hbc",
+                                               "expression_matrices.type" = "matrix", 
+                                               "covariates" = "hbc",
+                                               "cov.list" = hbc.covlist,
+                                               "id.col" = "SampleID", 
+                                               "phe.col"="bip", 
+                                               "id.list"=hbc.bip.sid,
+                                               "de.formula" = hbc.bip.frm,
+                                               "needsContrast" = FALSE,
+                                               "contrasts" = NA)
+
+# cmc acc
+  ls=load("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_ACC/expression/residualsLibraryBatch_no_outliers.RData")
+  resVP=get(ls)
+  vobj=readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_ACC/expression/voom_normalized_counts_no_outliers.RDS")
+  nonlbp.voom[["cmc|acc"]] <- vobj  
+  colnames(resVP)=colnames(vobj)
+  rownames(resVP)=rownames(vobj)
+  cma.cov=readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_ACC/covariates/info_all.RDS")
+  cma.cov[Dx=="Control",scz:=0]
+  cma.cov[Dx=="Control",bip:=0]
+  cma.cov[Dx=="SCZ",scz:=1]
+  cma.cov[Dx=="BP",bip:=1]
+  cma.covlist = c("RIN", "BANK", "IntronicRate", "Gender", "Age_of_Death", "PMI", "IntragenicRate", "GenesDetected", "PercentAligned", "MappedReads", "rRNARate")
+  cma.scz.cov = cma.cov[!is.na(scz),c("SampleID", "scz", cma.covlist), with=F]
+  cma.bip.cov = cma.cov[!is.na(bip),c("SampleID", "bip", cma.covlist), with=F]
+  cma.scz.sid = intersect( as.character(cma.scz.cov$SampleID), colnames(resVP) )
+  cma.bip.sid = intersect( as.character(cma.bip.cov$SampleID), colnames(resVP) )
+  cma.scz.frm <- as.formula(paste("~ ", paste(c("scz", cma.covlist), collapse = " + ")))
+  cma.bip.frm <- as.formula(paste("~ ", paste(c("bip", cma.covlist), collapse = " + ")))
+  mydata[["expression_matrices"]][["cmc|acc"]] = resVP
+  mydata[["covariates"]][["cmc|acc"]] = cma.cov
+  mydata[["datasets"]][["cmc|acc|scz"]] = list("expression_matrices" = "cmc|acc",
+                                               "expression_matrices.type" = "matrix", 
+                                               "covariates" = "cmc|acc",
+                                               "cov.list" = cma.covlist,
+                                               "id.col" = "SampleID", 
+                                               "phe.col"="scz",
+                                               "id.list"=cma.scz.sid,
+                                               "de.formula" = cma.scz.frm,
+                                               "needsContrast" = FALSE,
+                                               "contrasts" = NA)
+  mydata[["datasets"]][["cmc|acc|bip"]] = list("expression_matrices" = "cmc|acc",
+                                               "expression_matrices.type" = "matrix", 
+                                               "covariates" = "cmc|acc",
+                                               "cov.list" = cma.covlist,
+                                               "id.col" = "SampleID", 
+                                               "phe.col"="bip",
+                                               "id.list"=cma.bip.sid,
+                                               "de.formula" = cma.bip.frm,
+                                               "needsContrast" = FALSE,
+                                               "contrasts" = NA)
+
+# cmc pfc
+  ls=load("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_PFC/expression/residualsLibraryBatch_no_outliers.RData")
+  resVP=get(ls)
+  vobj=readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_PFC/expression/voom_normalized_counts_no_outliers.RDS")
+  nonlbp.voom[["cmc|pfc"]] <- vobj  
+  colnames(resVP)=colnames(vobj)
+  rownames(resVP)=rownames(vobj)
+  cmp.cov=readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_PFC/covariates/info_all.RDS")
+  cmp.cov[Dx=="Control",scz:=0]
+  cmp.cov[Dx=="Control",bip:=0]
+  cmp.cov[Dx=="SCZ",scz:=1]
+  cmp.cov[Dx=="BP",bip:=1]
+  cmp.covlist = c("BANK", "RIN", "ExonicRate", "IntragenicRate", "GenesDetected", "Gender", "PMI", "Age_of_Death", "MappedReads")
+  cmp.scz.cov = cmp.cov[!is.na(scz),c("SampleID", "scz", cmp.covlist), with=F]
+  cmp.bip.cov = cmp.cov[!is.na(bip),c("SampleID", "bip", cmp.covlist), with=F]
+  cmp.scz.sid = intersect( as.character(cmp.scz.cov$SampleID), colnames(resVP) )
+  cmp.bip.sid = intersect( as.character(cmp.bip.cov$SampleID), colnames(resVP) )
+  cmp.scz.frm <- as.formula(paste("~ ", paste(c("scz", cmp.covlist), collapse = " + ")))
+  cmp.bip.frm <- as.formula(paste("~ ", paste(c("bip", cmp.covlist), collapse = " + ")))
+  mydata[["expression_matrices"]][["cmc|pfc"]] = resVP
+  mydata[["covariates"]][["cmc|pfc"]] = cmp.cov
+  mydata[["datasets"]][["cmc|pfc|scz"]] = list("expression_matrices" = "cmc|pfc",
+                                               "expression_matrices.type" = "matrix", 
+                                               "covariates" = "cmc|pfc",
+                                               "cov.list" = cmp.covlist,
+                                               "id.col" = "SampleID", 
+                                               "phe.col"="scz",
+                                               "id.list"=cmp.scz.sid,
+                                               "de.formula" = cmp.scz.frm,
+                                               "needsContrast" = FALSE,
+                                               "contrasts" = NA)
+  mydata[["datasets"]][["cmc|pfc|bip"]] = list("expression_matrices" = "cmc|pfc",
+                                               "expression_matrices.type" = "matrix", 
+                                               "covariates" = "cmc|pfc",
+                                               "cov.list" = cmp.covlist,
+                                               "id.col" = "SampleID", 
+                                               "phe.col"="bip",
+                                               "id.list"=cmp.bip.sid,
+                                               "de.formula" = cmp.bip.frm,
+                                               "needsContrast" = FALSE,
+                                               "contrasts" = NA)
+
+
+# ampad
+  ls=load("/sc/arion/projects/adineto/Noam/residuals/residuals_MSSM_Batch_for_correct_VP_without_outliers_RIN_larger_equal_4_best_only.RData")
+  resVP=get(ls)
+  ls=load("/sc/arion/projects/adineto/Noam_forHydra/AMPAD_all_data/MSSM/normalized_counts_MSSM.RData")  
+  vobj = get(ls)
+  nonlbp.voom[["amp"]] <- vobj
+  amp.cov = readRDS("/hpc/users/beckmn01/AMP-AD/info_all_AMP-AD_corrected_final_redone_best_only.RDS")
+  amp.cov=amp.cov[match(colnames(resVP),amp.cov$sample_ID),]
+  for(i in colnames(amp.cov)){
+      if(class(amp.cov[,i])=="numeric"){
+          amp.cov[,i]=as.numeric(amp.cov[,i])
+      }else if(class(amp.cov[,i])=="character"){
+          amp.cov[,i]=as.character(amp.cov[,i])
+      }else if(class(amp.cov[,i])=="factor"){
+          amp.cov[,i]=factor(amp.cov[,i])
+      }
+  }
+  amp.cov=cbind(amp.cov,amp.cov$PATH.Dx)
+  colnames(amp.cov)[ncol(amp.cov)]="PATH.Dx_simplified"
+  amp.cov$PATH.Dx_simplified[amp.cov$PATH.Dx_simplified!="NL"]="AD"
+  amp.cov$PATH.Dx_simplified=factor(amp.cov$PATH.Dx_simplified,levels=c("NL","AD"))
+  amp.cov$CDR_simplified=as.character(amp.cov$CDR)
+  amp.cov$CDR_simplified[as.numeric(as.character(amp.cov$CDR))<1]="NL"
+  amp.cov$CDR_simplified[as.numeric(as.character(amp.cov$CDR))>=1]="AD"
+  amp.cov$CDR_simplified=factor(amp.cov$CDR_simplified,levels=c("NL","AD"))
+  amp.cov$NP.1_simplified=as.character(amp.cov$NP.1)
+  amp.cov$NP.1_simplified[as.numeric(as.character(amp.cov$NP.1))<2]="NL"
+  amp.cov$NP.1_simplified[as.numeric(as.character(amp.cov$NP.1))>=2]="AD"
+  amp.cov$NP.1_simplified=factor(amp.cov$NP.1_simplified,levels=c("NL","AD"))
+  amp.cov$CERJ_simplified=substring(as.character(amp.cov$CERJ),1,1)
+  amp.cov$CERJ_simplified[as.numeric(substring(as.character(amp.cov$CERJ),1,1))<2]="NL"
+  amp.cov$CERJ_simplified[as.numeric(substring(as.character(amp.cov$CERJ),1,1))>=2]="AD"
+  amp.cov$CERJ_simplified=factor(amp.cov$CERJ_simplified,levels=c("NL","AD"))
+  amp.cov$bbscore_simplified=as.character(amp.cov$bbscore)
+  amp.cov$bbscore_simplified[as.numeric(as.character(amp.cov$bbscore))<3]="NL"
+  amp.cov$bbscore_simplified[as.numeric(as.character(amp.cov$bbscore))>=3]="AD"
+  amp.cov$bbscore_simplified=factor(amp.cov$bbscore_simplified,levels=c("NL","AD"))
+  amp.cov$PlaqueMean_defvsctl=as.character(amp.cov$PlaqueMean)
+  amp.cov$PlaqueMean_defvsctl[as.numeric(as.character(amp.cov$PlaqueMean))<6]="NL"
+  amp.cov$PlaqueMean_defvsctl[as.numeric(as.character(amp.cov$PlaqueMean))>=12]="AD"
+  amp.cov$PlaqueMean_defvsctl[amp.cov$PlaqueMean_defvsctl!="NL" & amp.cov$PlaqueMean_defvsctl!="AD"]="MCI"
+  amp.cov$PlaqueMean_defvsctl=factor(amp.cov$PlaqueMean_defvsctl)
+  amp.cov$CDR_defvsctl=as.character(amp.cov$CDR)
+  amp.cov$CDR_defvsctl[as.numeric(as.character(amp.cov$CDR))==0]="NL"
+  amp.cov$CDR_defvsctl[as.numeric(as.character(amp.cov$CDR))>=1]="AD"
+  amp.cov$CDR_defvsctl=factor(amp.cov$CDR_defvsctl)
+  amp.cov$CERJ_defvsctl=substring(as.character(amp.cov$CERJ),1,1)
+  amp.cov$CERJ_defvsctl[as.numeric(substring(as.character(amp.cov$CERJ),1,1))==1]="NL"
+  amp.cov$CERJ_defvsctl[as.numeric(substring(as.character(amp.cov$CERJ),1,1))==2]="AD"
+  amp.cov$CERJ_defvsctl=factor(amp.cov$CERJ_defvsctl)
+  identical(as.character(amp.cov$sample_ID),colnames(resVP)) #[1] TRUE
+  disease_statuses = c("PATH.Dx", "CDR_defvsctl", "PlaqueMean_defvsctl", "NP.1", 
+                       "CERJ_defvsctl", "PATH.Dx_simplified", "CDR_simplified", 
+                       "PlaqueMean", "NP.1_simplified", "CERJ_simplified", "bbscore_simplified")
+  amp.cov.dt = as.data.table(amp.cov)
+  amp.covlist = c("PMI", "RACE", "correct_SEX", "RIN", "Exonic.Rate")
+  mydata[["expression_matrices"]][["amp"]] = resVP
+  mydata[["covariates"]][["amp"]] = list()
+  for(status in disease_statuses){
+    for(tis in levels(amp.cov$tissue)){
+        name <- paste("amp", tis, status, sep = "|")
+        keep <- as.character(amp.cov.dt[!is.na(get(status)) & tissue == tis]$sample_ID)
+        keep <- rownames(amp.cov)[rownames(amp.cov) %in% keep]
+        keep <- colnames(resVP)[colnames(resVP) %in% keep]
+        info_all_tissue <- amp.cov[keep,]
+        resVP_tissue <- resVP[,keep]
+        for(i in 1:ncol(info_all_tissue)){
+            if(class(info_all_tissue[,i])=="factor"){
+                info_all_tissue[,i]=factor(info_all_tissue[,i])
+            }
+        }
+        if(grepl("simplified",status)==TRUE | status=="PlaqueMean") {
+            de.formula <- as.formula(paste("~",paste(c(status,amp.covlist),collapse="+")))
+            needsContrast <- FALSE
+            contrasts <- NA
+        } else {
+            de.formula <- as.formula(paste("~ 0 +",paste(c(status,amp.covlist),collapse="+")))
+            needsContrast <- TRUE            
+            if(status=="PATH.Dx"){
+                contrasts <- paste(status,"AD-",status,"NL",sep="")
+            }else if(status=="CDR_defvsctl"){
+                contrasts <- paste(status,"AD-",status,"NL",sep="")
+            }else if(status=="PlaqueMean_defvsctl"){
+                contrasts <- paste(status,"AD-",status,"NL",sep="")
+            }else if(status=="NP.1"){
+                contrasts <- paste(status,"2-",status,"1",sep="")
+            }else if(status=="CERJ_defvsctl"){
+                contrasts <- paste(status,"AD-",status,"NL",sep="")
+            }
+        }                       
+        mydata[["datasets"]][[name]] <- list("expression_matrices" = "amp",
+                                             "expression_matrices.type" = "matrix", 
+                                             "covariates" = c("amp", name),
+                                             "cov.list" = amp.covlist,
+                                             "id.col" = "sample_ID", 
+                                             "phe.col"=status,
+                                             "id.list"=keep,
+                                             "de.formula" = de.formula,
+                                             "needsContrast" = needsContrast,
+                                             "contrasts" = contrasts)
+        mydata[["covariates"]][["amp"]][[name]] <- info_all_tissue
+    }
+  }
+
+# save 
+  mydata$voomObjects <- nonlbp.voom
+  mydata$voomObjects$lbp <- lbp$voomObject
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata")
+
+
+#+END_SRC
+
+
+* add up new lbp de results to mydata
+
+#+BEGIN_SRC R
+
+# setup
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  setwd("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/NPP536")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# load lel data
+  vobj <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/vobj.RDS")
+  meta <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/meta.RDS")
+  degs <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/degs.RDS")
+  covs <- c("mymet_sex", "mymet_rin", "mymet_postmortem", "neuronal")
+
+# add lel data - expression_matrices
+  mydata$expression_matrices$lel <- vobj
+  mydata$voomObjects$lel <- vobj
+
+# add lel data - covariates
+  meta <- as.data.frame(meta)
+  rownames(meta) <- meta$ISM_SEMA4
+  mydata$covariates$lel <- meta[,covs]
+
+# add lel data - datasets
+  mydata$datasets$lel <- list()
+  mydata$datasets$lel$expression_matrices <- "lel"
+  mydata$datasets$lel$expression_matrices.type <- "voom"
+  mydata$datasets$lel$covariates <- "lel"
+  mydata$datasets$lel$cov.list <- covs
+  mydata$datasets$lel$id.col <- "ISM_SEMA4"
+  mydata$datasets$lel$phe.col <- "mymet_postmortem"
+  mydata$datasets$lel$id.list <- colnames(vobj)
+  mydata$datasets$lel$de.formula <- as.formula(paste("~",paste(covs,collapse="+")))
+  mydata$datasets$lel$needsContrast <- FALSE
+  mydata$datasets$lel$contrasts <- NA
+
+# sanity check - myde produces same result as de results from lora
+  de <- myde(cov.data = mydata$covariates$lel, cov.phecol="mymet_postmortem", expr.data=mydata$voomObject$lel$E)
+  mydata$datasets$lel$de <- de
+
+# save
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+
+#+END_SRC
+
+
+* add rosmap alzheimer's dataset to mydata
+
+#+BEGIN_SRC R
+
+# setup
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  setwd("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/NPP536")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load rosmap data 
+  vobj_ros <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/Rosmap/expression/voom_normalized_counts.RDS")
+  info_ros <- as.data.table(readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/Rosmap/covariates/info_all.RDS"))
+  covs_ros <- c("ceradscBin", "Batch", "RINcontinuous", "RnaSeqMetrics__MEDIAN_5PRIME_TO_3PRIME_BIAS", "msex",
+                "AlignmentSummaryMetrics__STRAND_BALANCE", "RnaSeqMetrics__PCT_INTRONIC_BASES", "pmi")
+
+# rosmap phenotypes
+  ##
+  ## cogdx
+  ##
+  info_ros[ cogdx=="1", cogdx:="Control"]
+  info_ros[ cogdx=="2", cogdx:="MCI_withoutOtherCause"]
+  info_ros[ cogdx=="3", cogdx:="MCI_withOtherCause"]
+  info_ros[ cogdx=="4", cogdx:="AD_withoutOtherCause_aka_ADPROB"]
+  info_ros[ cogdx=="5", cogdx:="AD_withOtherCause_aka_ADPOSS"]
+  info_ros[ cogdx=="6", cogdx:="nonAD_dementia"]
+  ##
+  ## cerad
+  ##
+  info_ros[ ceradsc=="1", ceradsc:="AD"]
+  info_ros[ ceradsc=="2", ceradsc:="ADPROB"]
+  info_ros[ ceradsc=="3", ceradsc:="ADPOSS"]
+  info_ros[ ceradsc=="4", ceradsc:="Control"]
+  ##
+  ## braak
+  ##
+  info_ros[ braaksc=="0", braaksc:="Control"]
+  info_ros[ braaksc=="1", braaksc:="I"]
+  info_ros[ braaksc=="2", braaksc:="II"]
+  info_ros[ braaksc=="3", braaksc:="III"]
+  info_ros[ braaksc=="4", braaksc:="IV"]
+  info_ros[ braaksc=="5", braaksc:="V"]
+  info_ros[ braaksc=="6", braaksc:="VI"]
+  ##
+  ## cerad - simplified
+  ##
+  case <- "AD"
+  ctrl <- "Control"
+  info_ros[ ceradsc %in% case, ceradscBin := 1 ]
+  info_ros[ ceradsc %in% ctrl, ceradscBin := 0 ]
+
+# keeping eur only since not a lot of non-eur and it screws up formulas
+  table(info_ros$race, info_ros$ceradscBin)
+  ##    0   1
+  ##1 162 183
+  ##2   3   3
+  ##3   0   0
+  ##6   0   1
+  info_ros <- info_ros[race==1]  
+
+# add rosmap data - expression_matrices
+  mydata$expression_matrices$ros <- vobj_ros
+  mydata$voomObjects$ros <- vobj_ros
+
+# add rosmap data - covariates
+  meta <- as.data.frame(info_ros)
+  rownames(meta) <- make.names(meta$sample)
+  mydata$covariates$ros <- meta[,covs_ros]
+
+# add ros data - datasets
+  mydata$datasets$ros <- list()
+  mydata$datasets$ros$expression_matrices <- "ros"
+  mydata$datasets$ros$expression_matrices.type <- "voom"
+  mydata$datasets$ros$covariates <- "ros"
+  mydata$datasets$ros$cov.list <- covs_ros
+  mydata$datasets$ros$id.col <- "sample"
+  mydata$datasets$ros$phe.col <- "ceradscBin"
+  mydata$datasets$ros$id.list <- make.names(info_ros[!is.na(ceradscBin)]$sample)
+  mydata$datasets$ros$de.formula <- as.formula(paste("~",paste(covs_ros,collapse="+")))
+  mydata$datasets$ros$needsContrast <- FALSE
+  mydata$datasets$ros$contrasts <- NA
+ 
+# sanity check - myde produces same result as de results from lora
+  de <- myde(cov.data = mydata$covariates$ros, cov.phecol="ceradscBin", expr.data=mydata$voomObject$ros$E)
+  mydata$datasets$ros$de <- de
+
+# save
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+
+#+END_SRC
+
+
+* add mayo alzheimer's dataset to mydata
+
+#+BEGIN_SRC R
+
+
+# setup
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  setwd("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/NPP536")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mayo data 
+  vobj_may <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/Mayo/TCX/expression/voom_normalized_counts.RDS")
+  info_may <- as.data.table(readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/Mayo/TCX/covariates/info_all.RDS"))
+  covs_may <- c("cascon.strict", "FLOWCELL", "RIN", "RnaSeqMetrics__MEDIAN_5PRIME_TO_3PRIME_BIAS", 
+                "AlignmentSummaryMetrics__PCT_CHIMERAS", "RnaSeqMetrics__PCT_INTRONIC_BASES")
+
+# mayo phenotypes
+  ##definition of pathologic aging: lack AD ; Braak NFT stage of III or less, CERAD neuritic and cortical plaque densities of 2 or more; no MCI
+  ##
+  ## broad - case = AD; control = pathologic aging or control
+  ##
+  info_may[Diagnosis=="AD", cascon.broad := 1]
+  info_may[Diagnosis %in% c("Pathologic Aging", "Control"), cascon.broad := 0]
+  ##
+  ## strict - case = AD; control = pathologic aging or control
+  ##
+  info_may[Diagnosis=="AD", cascon.strict := 1]
+  info_may[Diagnosis %in% c("Control"), cascon.strict := 0]
+
+# add mayo data - expression_matrices
+  mydata$expression_matrices$may <- vobj_may
+  mydata$voomObjects$may <- vobj_may
+
+# add mayo data - covariates
+  meta <- as.data.frame(info_may)
+  rownames(meta) <- make.names(meta$ID)
+  mydata$covariates$may <- meta[,covs_may]
+
+# add mayo data - datasets
+  mydata$datasets$may <- list()
+  mydata$datasets$may$expression_matrices <- "may"
+  mydata$datasets$may$expression_matrices.type <- "voom"
+  mydata$datasets$may$covariates <- "may"
+  mydata$datasets$may$cov.list <- covs_may
+  mydata$datasets$may$id.col <- "ID"
+  mydata$datasets$may$phe.col <- "cascon.strict"
+  mydata$datasets$may$id.list <- make.names(info_may[!is.na(cascon.strict)]$ID)
+  mydata$datasets$may$de.formula <- as.formula(paste("~",paste(covs_may,collapse="+")))
+  mydata$datasets$may$needsContrast <- FALSE
+  mydata$datasets$may$contrasts <- NA
+ 
+# sanity check - myde produces same result as de results from lora
+  de <- myde(cov.data = mydata$covariates$may, cov.phecol="cascon.strict", expr.data=mydata$voomObject$may$E)
+  mydata$datasets$may$de <- de
+
+# save
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+
+#+END_SRC
+
+
+* run cell type deconvolution for ampad
+
+#+BEGIN_SRC R
+
+# setup 
+  library(dtangle)
+  library(ggplot2)
+  library(reshape2)
+  library(data.table) 
+  library(edgeR)
+  library(limma)
+  library(Biobase) 
+  library(ggpubr)
+  library(ggthemes)
+
+# load reference data 
+  DECONVOLUTION_REFERENCE <- "/sc/arion/projects/psychgen/lbp/files/lake_for_cibersort_3.Rdata"
+  load(DECONVOLUTION_REFERENCE)
+  ##if((DO_DECONVOLUTION == T) && (DO_DECONVOLUTION_AFTER_RESIDUALIZATION == F)) {
+  reference <- new.env()
+  load(DECONVOLUTION_REFERENCE, env=reference)
+  sce2 <- exprs(reference$eset)
+  all_cell_type <- reference$eset@phenoData@data$cluster_name2
+  dacList <- reference$dacListAll1
+  rm(reference)
+
+# load ampad data
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  avobj <- mydata$voomObjects$amp
+  infoall2br = qc.data$lbpBatch1[mymet.brain==1,.(SID=paste("Sample_",ISM.SEMA4,"-2",sep=""), mymet.living)]
+
+# adjust ampad data
+  countMatrixCpm <- 2^(avobj$E)
+  aRescaled <- ExpressionSet(assayData=countMatrixCpm)
+  me2 <- exprs(aRescaled)
+  rownames(me2) <- as.character(sapply(rownames(me2),function(x) strsplit(x,"[.]")[[1]][1]))
+  
+# join reference and mixture
+  commongenes <- intersect (rownames(me2),rownames(sce2))
+  me2 <- log2(me2[pmatch(commongenes, rownames(me2)), ]+1)
+  sce2 <- log2(cpm(sce2[pmatch(commongenes, rownames(sce2)), ])+1)
+  y2 <- cbind(sce2, me2)
+  y2 <- normalizeBetweenArrays(y2)
+  y2 <- t(y2)
+  dim(me2)
+  dim(sce2)
+  dim(y2)  
+  pure_samples2 <- lapply(1:length(unique(all_cell_type)), function(i) {which(all_cell_type == unique(all_cell_type)[i])})
+  names(pure_samples2) <- unique(all_cell_type)
+  n_markers2 <- as.integer(sapply(dacList, function(x) length(x)))
+  n_markers2 <- sapply(dacList, function(x) length(x))
+  marks2 <- sapply(names(n_markers2), function(x) which(colnames(y2) %in% dacList[[x]]))
+  dc2 <- dtangle(y2, pure_samples=pure_samples2, data_type="rna-seq", markers=marks2)
+  final_est <- dc2$estimates[(dim(sce2)[2]+1):dim(y2)[1],]
+  colnames(final_est) =  unique(all_cell_type)
+  head(final_est)
+  plot_data <- as.data.table(melt(final_est))
+  colnames(plot_data) <- c("SID", "CellType", "Proportion") 
+  plot_data$Proportion <- as.numeric(plot_data$Proportion)
+  final_est <- as.data.table(final_est, keep.rownames=T)
+  saveRDS(final_est, file="/sc/arion/work/charna02/symlinks/lbp/liharska2021/ampad_celltypedecon.RDS")
+
+#+END_SRC
+
+
+* run cell type deconvolution for cmc and hbcc
+
+#+BEGIN_SRC R
+
+# setup 
+  library(dtangle)
+  library(ggplot2)
+  library(reshape2)
+  library(data.table) 
+  library(edgeR)
+  library(limma)
+  library(Biobase) 
+  library(ggpubr)
+  library(ggthemes)
+
+# load reference data 
+  DECONVOLUTION_REFERENCE <- "/sc/arion/projects/psychgen/lbp/files/lake_for_cibersort_3.Rdata"
+  load(DECONVOLUTION_REFERENCE)
+  ##if((DO_DECONVOLUTION == T) && (DO_DECONVOLUTION_AFTER_RESIDUALIZATION == F)) {
+  reference <- new.env()
+  load(DECONVOLUTION_REFERENCE, env=reference)
+  sce2 <- exprs(reference$eset)
+  all_cell_type <- reference$eset@phenoData@data$cluster_name2
+  dacList <- reference$dacListAll1
+  rm(reference)
+  pure_samples2 <- lapply(1:length(unique(all_cell_type)), function(i) {which(all_cell_type == unique(all_cell_type)[i])})
+  names(pure_samples2) <- unique(all_cell_type)
+  n_markers2 <- as.integer(sapply(dacList, function(x) length(x)))
+  n_markers2 <- sapply(dacList, function(x) length(x))
+
+# load cmc and hbcc data
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  vobj1 <- mydata$voomObjects$`cmc|pfc`
+  vobj2 <- mydata$voomObjects$`cmc|acc`
+  vobj3 <- mydata$voomObjects$`hbc`
+
+# adjust cmc and hbcc data
+  countMatrixCpm1 <- 2^(vobj1$E)
+  countMatrixCpm2 <- 2^(vobj2$E)
+  countMatrixCpm3 <- 2^(vobj3$E)
+  Rescaled1 <- ExpressionSet(assayData=countMatrixCpm1)
+  Rescaled2 <- ExpressionSet(assayData=countMatrixCpm2)
+  Rescaled3 <- ExpressionSet(assayData=countMatrixCpm3)
+  me1 <- exprs(Rescaled1)
+  me2 <- exprs(Rescaled2)
+  me3 <- exprs(Rescaled3)
+  rownames(me1) <- as.character(sapply(rownames(me1),function(x) strsplit(x,"[.]")[[1]][1]))
+  rownames(me2) <- as.character(sapply(rownames(me2),function(x) strsplit(x,"[.]")[[1]][1]))
+  rownames(me3) <- as.character(sapply(rownames(me3),function(x) strsplit(x,"[.]")[[1]][1]))
+  
+# join reference and mixture
+  commongenes1 <- intersect (rownames(me1),rownames(sce2))
+  commongenes2 <- intersect (rownames(me2),rownames(sce2))
+  commongenes3 <- intersect (rownames(me3),rownames(sce2))
+  me1 <- log2(me1[pmatch(commongenes1, rownames(me1)), ]+1)
+  me2 <- log2(me2[pmatch(commongenes2, rownames(me2)), ]+1)
+  me3 <- log2(me3[pmatch(commongenes3, rownames(me3)), ]+1)
+  sce2.1 <- log2(cpm(sce2[pmatch(commongenes1, rownames(sce2)), ])+1)
+  sce2.2 <- log2(cpm(sce2[pmatch(commongenes2, rownames(sce2)), ])+1)
+  sce2.3 <- log2(cpm(sce2[pmatch(commongenes3, rownames(sce2)), ])+1)
+  y2.1 <- cbind(sce2.1, me1)
+  y2.2 <- cbind(sce2.2, me2)
+  y2.3 <- cbind(sce2.3, me3)
+  y2.1 <- normalizeBetweenArrays(y2.1)
+  y2.2 <- normalizeBetweenArrays(y2.2)
+  y2.3 <- normalizeBetweenArrays(y2.3)
+  y2.1 <- t(y2.1)
+  y2.2 <- t(y2.2)
+  y2.3 <- t(y2.3)
+  dim(me1)
+  dim(me2)
+  dim(me3)
+  dim(sce2.1)
+  dim(sce2.2)
+  dim(sce2.3)
+  dim(y2.1) 
+  dim(y2.2) 
+  dim(y2.3) 
+  marks2.1 <- sapply(names(n_markers2), function(x) which(colnames(y2.1) %in% dacList[[x]]))
+  marks2.2 <- sapply(names(n_markers2), function(x) which(colnames(y2.2) %in% dacList[[x]]))
+  marks2.3 <- sapply(names(n_markers2), function(x) which(colnames(y2.3) %in% dacList[[x]]))
+  dc2.1 <- dtangle(y2.1, pure_samples=pure_samples2, data_type="rna-seq", markers=marks2.1)
+  dc2.2 <- dtangle(y2.2, pure_samples=pure_samples2, data_type="rna-seq", markers=marks2.2)
+  dc2.3 <- dtangle(y2.3, pure_samples=pure_samples2, data_type="rna-seq", markers=marks2.3)
+  final_est1 <- dc2.1$estimates[(dim(sce2.1)[2]+1):dim(y2.1)[1],]
+  final_est2 <- dc2.2$estimates[(dim(sce2.2)[2]+1):dim(y2.2)[1],]
+  final_est3 <- dc2.3$estimates[(dim(sce2.3)[2]+1):dim(y2.3)[1],]
+  final_est1 <- as.data.table(final_est1, keep.rownames=T)
+  final_est2 <- as.data.table(final_est2, keep.rownames=T)
+  final_est3 <- as.data.table(final_est3, keep.rownames=T)
+  saveRDS(final_est1, file="/sc/arion/work/charna02/symlinks/lbp/liharska2021/cmcpfc_celltypedecon.RDS")
+  saveRDS(final_est2, file="/sc/arion/work/charna02/symlinks/lbp/liharska2021/cmcacc_celltypedecon.RDS")
+  saveRDS(final_est3, file="/sc/arion/work/charna02/symlinks/lbp/liharska2021/hbcc_celltypedecon.RDS")
+
+#+END_SRC
+
+
+* run cell type deconvolution for rosmap
+
+#+BEGIN_SRC R
+
+# setup 
+  library(dtangle)
+  library(ggplot2)
+  library(reshape2)
+  library(data.table) 
+  library(edgeR)
+  library(limma)
+  library(Biobase) 
+  library(ggpubr)
+  library(ggthemes)
+
+# load reference data 
+  DECONVOLUTION_REFERENCE <- "/sc/arion/projects/psychgen/lbp/files/lake_for_cibersort_3.Rdata"
+  load(DECONVOLUTION_REFERENCE)
+  ##if((DO_DECONVOLUTION == T) && (DO_DECONVOLUTION_AFTER_RESIDUALIZATION == F)) {
+  reference <- new.env()
+  load(DECONVOLUTION_REFERENCE, env=reference)
+  sce2 <- exprs(reference$eset)
+  all_cell_type <- reference$eset@phenoData@data$cluster_name2
+  dacList <- reference$dacListAll1
+  rm(reference)
+
+# load ros data
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  avobj <- mydata$voomObjects$ros
+
+# adjust ros data
+  countMatrixCpm <- 2^(avobj$E)
+  aRescaled <- ExpressionSet(assayData=countMatrixCpm)
+  me2 <- exprs(aRescaled)
+  rownames(me2) <- as.character(sapply(rownames(me2),function(x) strsplit(x,"[.]")[[1]][1]))
+  
+# join reference and mixture
+  commongenes <- intersect (rownames(me2),rownames(sce2))
+  me2 <- log2(me2[pmatch(commongenes, rownames(me2)), ]+1)
+  sce2 <- log2(cpm(sce2[pmatch(commongenes, rownames(sce2)), ])+1)
+  y2 <- cbind(sce2, me2)
+  y2 <- normalizeBetweenArrays(y2)
+  y2 <- t(y2)
+  dim(me2)
+  dim(sce2)
+  dim(y2)  
+  pure_samples2 <- lapply(1:length(unique(all_cell_type)), function(i) {which(all_cell_type == unique(all_cell_type)[i])})
+  names(pure_samples2) <- unique(all_cell_type)
+  n_markers2 <- sapply(dacList, function(x) length(x))
+  marks2 <- sapply(names(n_markers2), function(x) which(colnames(y2) %in% dacList[[x]]))
+  dc2 <- dtangle(y2, pure_samples=pure_samples2, data_type="rna-seq", markers=marks2)
+  final_est <- dc2$estimates[(dim(sce2)[2]+1):dim(y2)[1],]
+  colnames(final_est) =  unique(all_cell_type)
+  colnames(plot_data) <- c("SID", "CellType", "Proportion") 
+  final_est <- as.data.table(final_est, keep.rownames=T)
+  saveRDS(final_est, file="/sc/arion/work/charna02/symlinks/lbp/liharska2021/rosmap_celltypedecon.RDS")
+
+#+END_SRC
+
+
+* run cell type deconvolution for mayo
+
+#+BEGIN_SRC R
+
+# setup 
+  library(dtangle)
+  library(ggplot2)
+  library(reshape2)
+  library(data.table) 
+  library(edgeR)
+  library(limma)
+  library(Biobase) 
+  library(ggpubr)
+  library(ggthemes)
+
+# load reference data 
+  DECONVOLUTION_REFERENCE <- "/sc/arion/projects/psychgen/lbp/files/lake_for_cibersort_3.Rdata"
+  load(DECONVOLUTION_REFERENCE)
+  ##if((DO_DECONVOLUTION == T) && (DO_DECONVOLUTION_AFTER_RESIDUALIZATION == F)) {
+  reference <- new.env()
+  load(DECONVOLUTION_REFERENCE, env=reference)
+  sce2 <- exprs(reference$eset)
+  all_cell_type <- reference$eset@phenoData@data$cluster_name2
+  dacList <- reference$dacListAll1
+  rm(reference)
+
+# load ros data
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  avobj <- mydata$voomObjects$may
+
+# adjust ros data
+  countMatrixCpm <- 2^(avobj$E)
+  aRescaled <- ExpressionSet(assayData=countMatrixCpm)
+  me2 <- exprs(aRescaled)
+  rownames(me2) <- as.character(sapply(rownames(me2),function(x) strsplit(x,"[.]")[[1]][1]))
+  
+# join reference and mixture
+  commongenes <- intersect (rownames(me2),rownames(sce2))
+  me2 <- log2(me2[pmatch(commongenes, rownames(me2)), ]+1)
+  sce2 <- log2(cpm(sce2[pmatch(commongenes, rownames(sce2)), ])+1)
+  y2 <- cbind(sce2, me2)
+  y2 <- normalizeBetweenArrays(y2)
+  y2 <- t(y2)
+  dim(me2)
+  dim(sce2)
+  dim(y2)  
+  pure_samples2 <- lapply(1:length(unique(all_cell_type)), function(i) {which(all_cell_type == unique(all_cell_type)[i])})
+  names(pure_samples2) <- unique(all_cell_type)
+  n_markers2 <- sapply(dacList, function(x) length(x))
+  marks2 <- sapply(names(n_markers2), function(x) which(colnames(y2) %in% dacList[[x]]))
+  dc2 <- dtangle(y2, pure_samples=pure_samples2, data_type="rna-seq", markers=marks2)
+  final_est <- dc2$estimates[(dim(sce2)[2]+1):dim(y2)[1],]
+  colnames(final_est) =  unique(all_cell_type)
+  colnames(plot_data) <- c("SID", "CellType", "Proportion") 
+  final_est <- as.data.table(final_est, keep.rownames=T)
+  saveRDS(final_est, file="/sc/arion/work/charna02/symlinks/lbp/liharska2021/mayo_celltypedecon.RDS")
+
+#+END_SRC
+
+
+* add cell type deconvolution to mydata 
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(data.table))
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# load decon data
+  ampdc <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/ampad_celltypedecon.RDS")
+  cmpdc <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/cmcpfc_celltypedecon.RDS")
+  cmadc <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/cmcacc_celltypedecon.RDS")
+  hbcdc <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/hbcc_celltypedecon.RDS")
+  leldc <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/meta.RDS")[,.(rn=ISM_SEMA4, GLU, GABA, AST, ODC, MG)]
+  rosdc <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/rosmap_celltypedecon.RDS")
+  maydc <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/mayo_celltypedecon.RDS")
+
+# sanity checks sample names match in expression data and decon data
+  nrow(ampdc[rn %in% colnames(mydata$expression_matrices$amp)]) == nrow(ampdc) #[1] TRUE
+  nrow(cmpdc[rn %in% colnames(mydata$expression_matrices$`cmc|pfc`)]) == nrow(cmpdc) #[1] TRUE
+  nrow(cmadc[rn %in% colnames(mydata$expression_matrices$`cmc|acc`)]) == nrow(cmadc) #[1] TRUE
+  nrow(hbcdc[rn %in% colnames(mydata$expression_matrices$hbc)]) == nrow(hbcdc) #[1] TRUE
+  nrow(leldc[rn %in% colnames(mydata$expression_matrices$lel)]) == nrow(leldc) #[1] TRUE
+  nrow(rosdc[rn %in% colnames(mydata$expression_matrices$ros)]) == nrow(rosdc) #[1] TRUE
+  nrow(maydc[rn %in% colnames(mydata$expression_matrices$may)]) == nrow(maydc) #[1] TRUE
+
+# add decon data to mydata
+  mydata$decon <- list()
+  mydata$decon$amp <- ampdc
+  mydata$decon$`cmc|pfc` <- cmpdc
+  mydata$decon$`cmc|acc` <- cmadc
+  mydata$decon$hbc <- hbcdc
+  mydata$decon$lel <- leldc
+  mydata$decon$lbp <- leldc
+  mydata$decon$ros <- rosdc
+  mydata$decon$may <- maydc
+
+# save mydata
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+#+END_SRC
+
+
+* code for marking the overlapping samples between ampad and cmc
+
+#+BEGIN_SRC R
+
+
+# setup 
+  library(data.table)
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# cmc and ampad overlaps from genetic analyses in gdde.org
+  x1 <- "/sc/arion/projects/psychgen/methods/gdde/data/dna/OLD/combined/mer.hg19.sharedsnps.fixed.pr.gtcheck.out.ERR"
+  x2 <- "/sc/arion/projects/psychgen/methods/gdde/data/dna/OLD/combined/mer.hg19.sharedsnps.fixed.pr.gtcheck.out.CN"
+  err <- fread(x1)[,.(id1=V4, id2=V5, err=V2, nsites=V3)]
+  cnn <- fread(x2)[,.(id1=V5, id2=V6, dis=V2, nsites=V3)]
+  mer <- merge(err, cnn)
+  mat <- mer[err<0.2]
+  cmcamp <- unique(gsub("cmc_", "", mat[grep("cmc", id2)]$id2))
+  rmme <-  mydata$covariates[["cmc|pfc"]][Individual_ID %in% cmcamp]$SampleID
+  mydata[["datasets"]][["cmc|pfc|scz"]][["ampadOverlaps"]] <- rmme
+
+# cmc master metadata 
+  cmc.exp.met <- mydata$covariates$`cmc|pfc`
+  ds.keep <- mydata[["datasets"]][["cmc|pfc|scz"]][["id.list"]]
+  cmc.exp.met[,ampGenOverlap:=0]
+  cmc.exp.met[SampleID %in% rmme,ampGenOverlap:=1]
+  cmc.scz <- cmc.exp.met[SampleID %in% ds.keep]
+  mmf <- "/sc/arion/projects/CommonMind/data/MERGED_METADATA.csv"
+  mm <- read.delim(mmf, sep=',', header=T, stringsAsFactors=FALSE, fileEncoding="latin1")
+  kp <- colnames(mm)[c(1:68,145)]
+  mm <- as.data.table(mm[,kp])
+  mm <- mm[ `DLPFC_RNA_isolation..Sample.RNA.ID` %in% ds.keep ]
+  novar <- names(which(apply(mm,2, function(x) sum(is.na(x))) == nrow(mm)))
+  mm[,c(novar) := NULL]
+  checkvar <- as.data.table(apply(mm,2, function(x) sum(is.na(x))), keep.rownames=T)
+  add <- mm[,.(Individual_ID=Individual.ID, SampleID=`DLPFC_RNA_isolation..Sample.RNA.ID`, 
+             Neuropath, NeuropathDesc=Neuropath.desc, braakStage=Braak.Stage,
+             dementia=`Presence.or.Absence.of.Dementia..Y.N.`, grossDiagnosis=Gross.Diagnosis, 
+             hoStroke=H.O.Stroke, hoPdAdLbdPick=H.O.PD.AD.LBD.Pick, DescDeath)]
+  novar <- names(which(apply(cmc.scz,2, function(x) sum(is.na(x))) == nrow(cmc.scz)))
+  cmc.scz[,c(novar) := NULL]
+  keepcol <- c("Individual_ID", "SampleID", "Gender", "Dx", "Age_of_Death", "Ethnicity", "BANK", "ampGenOverlap")
+  cmc.scz <- merge(cmc.scz[,keepcol,with=F], add, all.x=T) 
+  ##
+  ## manually review columns to see which might be informative
+  ##
+  cmc.scz[,hoPdAdLbdPick:=NULL] ## no useful data
+
+#+END_SRC
+
+
+* add residuals to mydata (for some datasets; useful for particular analyses)
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# datasets 
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+
+# residuals
+  mydata$residuals <- list()
+  for(set in mysets){
+      print (set)
+      ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+      ex.data <- mydata[["voomObjects"]][[ex.name]]
+      cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+      cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+      cv.covs <- mydata[["datasets"]][[set]][["cov.list"]]
+      cv.covs <- cv.covs[!cv.covs %in% cv.phen]
+      ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+      ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+      ex.data <- mydata[["expression_matrices"]][[ex.name]]
+      de.form <- as.formula(paste0("~", paste(cv.covs, collapse="+")))
+      if (length(cv.name)==1){
+          cv.data <- mydata[["covariates"]][[cv.name]]
+      } else {
+          cv.data <- mydata[["covariates"]][[cv.name[1]]][[cv.name[2]]]
+      }
+      ex.data <- ex.data[,ds.keep]
+      if ( "data.table" %in% class(cv.data) ){
+          cv.rnam <- cv.data[[ds.icol]]
+          cv.data <- as.data.frame(cv.data[, c(cv.covs), with=F])
+          rownames(cv.data) <- cv.rnam
+      } else {
+          cv.data <- cv.data[, c(cv.covs)]
+      }
+      cv.data <- cv.data[ds.keep,]
+      ##
+      ## add neuronal fraction to formula/covariates
+      ##
+      ndat <- as.data.frame(mydata[["decon"]][[ex.name]][,.(rn, neuronal=GLU+GABA)])
+      rownames(ndat) <- ndat$rn
+      ndat$rn <- NULL
+      ndat <- ndat[rownames(cv.data), , drop=F]
+      if (! identical(rownames(ndat),rownames(cv.data))) {
+          stop("neuronal and covariate rows are not equal")
+      } else {
+          cv.datn <- copy(cv.data)
+          cv.datn$neuronal <- ndat$neuronal
+          de.frmn <- as.formula(paste0("~", as.character(de.form)[2], " + neuronal"))
+      }
+      ##
+      ## check
+      ##
+      if (! identical(rownames(cv.data),colnames(ex.data))) {stop("covariate and expression cols are not equal")}
+      ##
+      ## residuals
+      ##
+      design1x <- model.matrix(de.form, cv.data)
+      design1a <- model.matrix(de.frmn, cv.datn)
+      ex.data <- ex.data[,rownames(design1x)]
+      colnames(design1x) <- make.names(colnames(design1x))
+      colnames(design1a) <- make.names(colnames(design1a))
+      lmgroup1x <- lmFit(ex.data, design1x)
+      lmgroup1a <- lmFit(ex.data, design1a)
+      resx <- residuals(lmgroup1x, ex.data,)
+      resa <- residuals(lmgroup1a, ex.data,)
+      mydata$residuals[[set]] <- list()
+      mydata$residuals[[set]][["model"]] <- resx
+      mydata$residuals[[set]][["modelPlusNeu"]] <- resa
+  }
+
+# save
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata")
+
+#+END_SRC
+
+
+* code for seeing how neuronal correction changes de overlap across lbp/scz/alz datasets
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# define sets to compare to lel
+  mysets <- c("lel", "lbp", "amp|10|NP.1", "amp|36|NP.1", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "cmc|acc|scz", "hbc|pfc|scz")
+
+# make helper
+  helper <- list()
+  for(set in mysets){
+    print (set)
+    helper[[set]] <- list("withNeuronal"=list(), "withoutNeuronal"=list())
+    ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+    ex.type <- mydata[["datasets"]][[set]][["expression_matrices.type"]]
+    cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+    cv.covs <- mydata[["datasets"]][[set]][["cov.list"]]
+    cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+    ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+    ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+    ex.data <- mydata[["expression_matrices"]][[ex.name]]
+    de.form <- mydata[["datasets"]][[set]][["de.formula"]]
+    needcon <- mydata[["datasets"]][[set]][["needsContrast"]]
+    if (needcon) {
+        coninfo <- mydata[["datasets"]][[set]][["contrasts"]]
+    } else {
+        coninfo <- NA
+    }
+    if (length(cv.name)==1){
+        cv.data <- mydata[["covariates"]][[cv.name]]
+    } else {
+        cv.data <- mydata[["covariates"]][[cv.name[1]]][[cv.name[2]]]
+    }
+    if (ex.type == "voom"){
+        ex.data <- ex.data$E
+    }
+    ex.data <- ex.data[,ds.keep]
+    if ( "data.table" %in% class(cv.data) ){
+        cv.rnam <- cv.data[[ds.icol]]
+        cv.data <- as.data.frame(cv.data[, c(cv.phen, cv.covs), with=F])
+        rownames(cv.data) <- cv.rnam
+    }else{
+        cv.data <- cv.data[, c(cv.phen, cv.covs)]
+    }
+    cv.data <- cv.data[ds.keep,]
+    if (! identical(rownames(cv.data),colnames(ex.data))) {
+        stop("covariate and expression cols are not equal")
+    } else {
+        if(set!="lel") {
+            helper[[set]][["withoutNeuronal"]][["exp"]] <- ex.data
+            helper[[set]][["withoutNeuronal"]][["cov"]] <- cv.data
+            helper[[set]][["withoutNeuronal"]][["frm"]] <- de.form
+            helper[[set]][["withoutNeuronal"]][["cnn"]] <- needcon
+            helper[[set]][["withoutNeuronal"]][["cni"]] <- coninfo
+            helper[[set]][["withoutNeuronal"]][["phe"]] <- cv.phen        
+            helper[[set]][["withNeuronal"]][["exp"]] <- ex.data
+            helper[[set]][["withNeuronal"]][["cnn"]] <- needcon
+            helper[[set]][["withNeuronal"]][["cni"]] <- coninfo
+            helper[[set]][["withNeuronal"]][["phe"]] <- cv.phen
+            ndat <- as.data.frame(mydata[["decon"]][[ex.name]][,.(rn, neuronal=GLU+GABA)])
+            rownames(ndat) <- ndat$rn
+            ndat$rn <- NULL
+            ndat <- ndat[rownames(cv.data), , drop=F]
+            cv.dat2 <- copy(cv.data)
+            if (! identical(rownames(ndat),rownames(cv.dat2))) {
+                stop("neuronal and covariate rows are not equal")
+            } else {
+                cv.dat2$neuronal <- ndat$neuronal
+                de.for2 <- as.formula(paste0("~", as.character(de.form)[2], " + neuronal"))
+                helper[[set]][["withNeuronal"]][["cov"]] <- cv.dat2
+                helper[[set]][["withNeuronal"]][["frm"]] <- de.for2
+            }
+        } else {
+            helper[[set]][["withNeuronal"]][["exp"]] <- ex.data
+            helper[[set]][["withNeuronal"]][["cov"]] <- cv.data
+            helper[[set]][["withNeuronal"]][["frm"]] <- de.form
+            helper[[set]][["withNeuronal"]][["cnn"]] <- needcon
+            helper[[set]][["withNeuronal"]][["cni"]] <- coninfo
+            helper[[set]][["withNeuronal"]][["phe"]] <- cv.phen        
+        }
+    }
+  }
+
+# sketch out the comparisons we are going to make right now
+  x <- as.data.table(t(combn(mysets, 2)))[,.(set1=V1, set2=V2)]
+  comparisons <- rbind(x[,.(set1, set2, set1neu="withNeuronal", set2neu="withNeuronal")],
+                       x[,.(set1, set2, set1neu="withNeuronal", set2neu="withoutNeuronal")],
+                       x[,.(set1, set2, set1neu="withoutNeuronal", set2neu="withNeuronal")],
+                       x[,.(set1, set2, set1neu="withoutNeuronal", set2neu="withoutNeuronal")])
+  comparisons <- comparisons[!(set1=="lel" & set1neu=="withoutNeuronal")]
+
+# compare de with/without neuronal correction across datasets
+  results <- c()
+  for (i in 1:nrow(comparisons)){
+
+      ## setup comparison
+      s1 <- comparisons[i]$set1
+      s2 <- comparisons[i]$set2
+      n1 <- comparisons[i]$set1neu
+      n2 <- comparisons[i]$set2neu
+      ds1 <- paste0(s1, ".", n1)
+      ds2 <- paste0(s2, ".", n2)
+      cat(ds1, ds2, '\n')
+
+      ## run de for set1
+      exp1 <- helper[[s1]][[n1]][["exp"]]
+      cov1 <- helper[[s1]][[n1]][["cov"]]
+      frm1 <- helper[[s1]][[n1]][["frm"]]
+      cnn1 <- helper[[s1]][[n1]][["cnn"]]
+      cni1 <- helper[[s1]][[n1]][["cni"]]
+      phe1 <- helper[[s1]][[n1]][["phe"]]
+      set1 <- helper[[s1]][[n1]][["set"]]
+      design1 <- model.matrix(frm1, cov1)
+      colnames(design1) <- make.names(colnames(design1))
+      lmgroup1 <- lmFit(exp1, design1)
+      if (cnn1){
+          contrasts1 <- makeContrasts(cni1, levels=design1)
+          eBfit1 <- eBayes(lmgroup1)
+          lmgroup_DE1 <- contrasts.fit(eBfit1, contrasts1)
+          lmgroup_DE1 <- eBayes(lmgroup_DE1)
+          coefcol1 <- 1
+      } else {
+          lmgroup_DE1 <- eBayes(lmgroup1)
+          coefcol1 <- which(gregexpr(phe1, colnames(design1))>0)
+      } 
+      Group_DE_tab1 <- topTable(lmgroup_DE1, coef=coefcol1, number=nrow(lmgroup_DE1))
+      de1 <- data.table( gene = rownames(Group_DE_tab1), Group_DE_tab1)
+      de1[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+
+      ## run de for set2
+      exp2 <- helper[[s2]][[n2]][["exp"]]
+      cov2 <- helper[[s2]][[n2]][["cov"]]
+      frm2 <- helper[[s2]][[n2]][["frm"]]
+      cnn2 <- helper[[s2]][[n2]][["cnn"]]
+      cni2 <- helper[[s2]][[n2]][["cni"]]
+      phe2 <- helper[[s2]][[n2]][["phe"]]
+      set2 <- helper[[s2]][[n2]][["set"]]
+      design2 <- model.matrix(frm2, cov2)
+      colnames(design2) <- make.names(colnames(design2))
+      lmgroup2 <- lmFit(exp2, design2)
+      if (cnn2){
+          contrasts2 <- makeContrasts(cni2, levels=design2)
+          eBfit2 <- eBayes(lmgroup2)
+          lmgroup_DE2 <- contrasts.fit(eBfit2, contrasts2)
+          lmgroup_DE2 <- eBayes(lmgroup_DE2)
+          coefcol2 <- 1
+      } else {
+          lmgroup_DE2 <- eBayes(lmgroup2)
+          coefcol2 <- which(gregexpr(phe2, colnames(design2))>0)
+      } 
+      Group_DE_tab2 <- topTable(lmgroup_DE2, coef=coefcol2, number=nrow(lmgroup_DE2))
+      de2 <- data.table( gene = rownames(Group_DE_tab2), Group_DE_tab2)
+      de2[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+
+      ## merge de results
+      de1.slim <- de1[,.(gene, logFC, adj.P.Val)]
+      de2.slim <- de2[,.(gene, logFC, adj.P.Val)]
+      mer <- merge(de1.slim, de2.slim, by="gene", suffixes=c(".ds1", ".ds2"))
+
+      ## correlate de results
+      spear <- cor.test(mer$logFC.ds1, mer$logFC.ds2, method="spearman")
+      pears <- cor.test(mer$logFC.ds1, mer$logFC.ds2, method="pearson")
+      add <- data.table(dataset1=ds1, dataset2=ds2, spearman=spear$estimate, spearman.pv=spear$p.value, pearson=pears$estimate, pearson.pv=pears$p.value)
+      results <- rbind(results, add)
+  }
+  saveRDS(results, file="/sc/arion/projects/psychgen/lbp/results/decorr_withvswithoutNeuronal.RDS")
+
+
+#+END_SRC
+
+
+* code for seeing how deg pvalue threshold changes de overlap across lbp/scz/alz datasets
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# define sets to compare to lel
+  mysets <- c("lel", "amp|10|NP.1", "amp|36|NP.1", "cmc|pfc|scz", "cmc|acc|scz", "hbc|pfc|scz")
+
+# make helper
+  helper <- list()
+  for(set in mysets){
+    print (set)
+    ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+    ex.type <- mydata[["datasets"]][[set]][["expression_matrices.type"]]
+    cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+    cv.covs <- mydata[["datasets"]][[set]][["cov.list"]]
+    cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+    ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+    ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+    ex.data <- mydata[["expression_matrices"]][[ex.name]]
+    de.form <- mydata[["datasets"]][[set]][["de.formula"]]
+    needcon <- mydata[["datasets"]][[set]][["needsContrast"]]
+    if (needcon) {
+        coninfo <- mydata[["datasets"]][[set]][["contrasts"]]
+    } else {
+        coninfo <- NA
+    }
+    if (length(cv.name)==1){
+        cv.data <- mydata[["covariates"]][[cv.name]]
+    } else {
+        cv.data <- mydata[["covariates"]][[cv.name[1]]][[cv.name[2]]]
+    }
+    if (ex.type == "voom"){
+        ex.data <- ex.data$E
+    }
+    ex.data <- ex.data[,ds.keep]
+    if ( "data.table" %in% class(cv.data) ){
+        cv.rnam <- cv.data[[ds.icol]]
+        cv.data <- as.data.frame(cv.data[, c(cv.phen, cv.covs), with=F])
+        rownames(cv.data) <- cv.rnam
+    }else{
+        cv.data <- cv.data[, c(cv.phen, cv.covs)]
+    }
+    cv.data <- cv.data[ds.keep,]
+    if (! identical(rownames(cv.data),colnames(ex.data))) {
+        stop("covariate and expression cols are not equal")
+    } else {
+        if(set!="lel") {
+            helper[[set]][["exp"]] <- ex.data
+            helper[[set]][["cnn"]] <- needcon
+            helper[[set]][["cni"]] <- coninfo
+            helper[[set]][["phe"]] <- cv.phen
+            ndat <- as.data.frame(mydata[["decon"]][[ex.name]][,.(rn, neuronal=GLU+GABA)])
+            rownames(ndat) <- ndat$rn
+            ndat$rn <- NULL
+            ndat <- ndat[rownames(cv.data), , drop=F]
+            cv.dat2 <- copy(cv.data)
+            if (! identical(rownames(ndat),rownames(cv.dat2))) {
+                stop("neuronal and covariate rows are not equal")
+            } else {
+                cv.dat2$neuronal <- ndat$neuronal
+                de.for2 <- as.formula(paste0("~", as.character(de.form)[2], " + neuronal"))
+                helper[[set]][["cov"]] <- cv.dat2
+                helper[[set]][["frm"]] <- de.for2
+            }
+        } else {
+            helper[[set]][["exp"]] <- ex.data
+            helper[[set]][["cov"]] <- cv.data
+            helper[[set]][["frm"]] <- de.form
+            helper[[set]][["cnn"]] <- needcon
+            helper[[set]][["cni"]] <- coninfo
+            helper[[set]][["phe"]] <- cv.phen        
+        }
+    }
+  }
+
+# sketch out the comparisons we are going to make right now
+  comparisons <- as.data.table(t(combn(mysets, 2)))[,.(set1=V1, set2=V2)]
+  thresholds <- c(1, 0.5, 0.05, 0.005, 0.0005, 0.00005)
+
+# compare de corr at different pval thresholds looks like across datasets
+  results <- c()
+  for (i in 1:nrow(comparisons)){
+
+      ## setup comparison
+      s1 <- comparisons[i]$set1
+      s2 <- comparisons[i]$set2
+
+      ## run de for set1
+      exp1 <- helper[[s1]][["exp"]]
+      cov1 <- helper[[s1]][["cov"]]
+      frm1 <- helper[[s1]][["frm"]]
+      cnn1 <- helper[[s1]][["cnn"]]
+      cni1 <- helper[[s1]][["cni"]]
+      phe1 <- helper[[s1]][["phe"]]
+      set1 <- helper[[s1]][["set"]]
+      design1 <- model.matrix(frm1, cov1)
+      colnames(design1) <- make.names(colnames(design1))
+      lmgroup1 <- lmFit(exp1, design1)
+      if (cnn1){
+          contrasts1 <- makeContrasts(cni1, levels=design1)
+          eBfit1 <- eBayes(lmgroup1)
+          lmgroup_DE1 <- contrasts.fit(eBfit1, contrasts1)
+          lmgroup_DE1 <- eBayes(lmgroup_DE1)
+          coefcol1 <- 1
+      } else {
+          lmgroup_DE1 <- eBayes(lmgroup1)
+          coefcol1 <- which(gregexpr(phe1, colnames(design1))>0)
+      } 
+      Group_DE_tab1 <- topTable(lmgroup_DE1, coef=coefcol1, number=nrow(lmgroup_DE1))
+      de1 <- data.table( gene = rownames(Group_DE_tab1), Group_DE_tab1)
+      de1[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+
+      ## run de for set2
+      exp2 <- helper[[s2]][["exp"]]
+      cov2 <- helper[[s2]][["cov"]]
+      frm2 <- helper[[s2]][["frm"]]
+      cnn2 <- helper[[s2]][["cnn"]]
+      cni2 <- helper[[s2]][["cni"]]
+      phe2 <- helper[[s2]][["phe"]]
+      set2 <- helper[[s2]][["set"]]
+      design2 <- model.matrix(frm2, cov2)
+      colnames(design2) <- make.names(colnames(design2))
+      lmgroup2 <- lmFit(exp2, design2)
+      if (cnn2){
+          contrasts2 <- makeContrasts(cni2, levels=design2)
+          eBfit2 <- eBayes(lmgroup2)
+          lmgroup_DE2 <- contrasts.fit(eBfit2, contrasts2)
+          lmgroup_DE2 <- eBayes(lmgroup_DE2)
+          coefcol2 <- 1
+      } else {
+          lmgroup_DE2 <- eBayes(lmgroup2)
+          coefcol2 <- which(gregexpr(phe2, colnames(design2))>0)
+      } 
+      Group_DE_tab2 <- topTable(lmgroup_DE2, coef=coefcol2, number=nrow(lmgroup_DE2))
+      de2 <- data.table( gene = rownames(Group_DE_tab2), Group_DE_tab2)
+      de2[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+
+      ## merge de results
+      de1.slim <- de1[,.(gene, logFC, P.Value)]
+      de2.slim <- de2[,.(gene, logFC, P.Value)]
+      mer <- merge(de1.slim, de2.slim, by="gene", suffixes=c(".ds1", ".ds2"))
+
+      ## correlate de results
+      for (k in thresholds){
+          cat(s1, s2, k, '\n')
+          tdat1 <- mer[P.Value.ds1<k]
+          nr1 <- nrow(tdat1)
+          spear1 <- cor.test(tdat1$logFC.ds1, tdat1$logFC.ds2, method="spearman")
+          pears1 <- cor.test(tdat1$logFC.ds1, tdat1$logFC.ds2, method="pearson")
+          tdat2 <- mer[P.Value.ds2<k]
+          nr2 <- nrow(tdat2)
+          spear2 <- cor.test(tdat2$logFC.ds1, tdat2$logFC.ds2, method="spearman")
+          pears2 <- cor.test(tdat2$logFC.ds1, tdat2$logFC.ds2, method="pearson")
+          add1 <- data.table(pt=k, pt.ds="dataset1", ndeg=nr1, dataset1=s1, dataset2=s2, 
+                            spearman=spear1$estimate, spearman.pv=spear1$p.value, 
+                            pearson=pears1$estimate, pearson.pv=pears1$p.value)
+          add2 <- data.table(pt=k, pt.ds="dataset2", ndeg=nr2, dataset1=s1, dataset2=s2, 
+                            spearman=spear2$estimate, spearman.pv=spear2$p.value, 
+                            pearson=pears2$estimate, pearson.pv=pears2$p.value)
+          results <- rbind(results, add1, add2)
+      }
+  }
+  saveRDS(results, file="/sc/arion/projects/psychgen/lbp/results/decorr_diffPt.RDS") #mydata
+
+# take a look
+  results[dataset2=="amp|36|NP.1" & dataset1=="lel"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="amp|10|NP.1" & dataset1=="lel"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|pfc|scz" & dataset1=="lel"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|acc|scz" & dataset1=="lel"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="hbc|pfc|scz" & dataset1=="lel"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="amp|36|NP.1" & dataset1=="amp|10|NP.1"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|pfc|scz" & dataset1=="amp|10|NP.1"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|acc|scz" & dataset1=="amp|10|NP.1"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="hbc|pfc|scz" & dataset1=="amp|10|NP.1"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset1=="amp|10|NP.1" & dataset2=="amp|36|NP.1"][order(pt.ds)][pt.ds=="dataset1"]
+  results[dataset2=="cmc|pfc|scz" & dataset1=="amp|36|NP.1"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|acc|scz" & dataset1=="amp|36|NP.1"][order(pt.ds)][pt.ds=="dataset2"]
+  results[dataset2=="hbc|pfc|scz" & dataset1=="amp|36|NP.1"][order(pt.ds)][pt.ds=="dataset2"]
+
+#+END_SRC
+
+
+* function in R for performing LBP correction with dtangle (used elsewhere below)
+
+#+BEGIN_SRC R
+
+pctlbp <- function(mixVobj, refFC, refCT, refDL){
+    
+  ## process reference data (assumes input as feature counts and a vector specifying which cols in expression data are which cell type)
+  sce <- as.matrix(refFC)
+  rownames(sce) <- as.character(sapply(rownames(sce),function(x) strsplit(x,"[.]")[[1]][1]))
+  pure_samples <- lapply(1:length(unique(refCT)), function(i) {which(refCT == unique(refCT)[i])})
+  names(pure_samples) = unique(refCT)
+
+  ## process mixture data (assumes input as voom object)
+  countMatrixCpm <- 2^(mixVobj$E)
+  rescaled <- ExpressionSet(assayData=countMatrixCpm)
+  m <- exprs(rescaled)
+  rownames(m) <- as.character(sapply(rownames(m),function(x) strsplit(x,"[.]")[[1]][1]))
+
+  ## join reference and mixture
+  commongenes <- intersect (rownames(m),rownames(sce))
+  m <- log2(m[pmatch(commongenes, rownames(m)), ]+1)
+  sce <- log2(cpm(sce[pmatch(commongenes, rownames(sce)), ])+1)
+  y <- cbind(sce, m)
+  y <- normalizeBetweenArrays(y)
+  y <- t(y)
+
+  ## detangle
+  n_markers <- sapply(refDL, function(x) length(x))
+  marks <- sapply(names(n_markers), function(x) which(colnames(y) %in% refDL[[x]]))
+  dc <- dtangle(y, pure_samples=pure_samples, data_type="rna-seq", markers=marks)
+  final_est <- dc$estimates[(dim(sce)[2]+1):dim(y)[1],]
+  colnames(final_est) <- unique(refCT)
+  final_est <- data.table(SampleID=rownames(final_est), final_est)
+  final_est
+
+}
+
+#+END_SRC
+
+
+* performing LBP correction using dtangle
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(dtangle))
+  suppressMessages(library(Biobase))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# lbp data
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  lbp <- readRDS("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/NPP536/lbp_data_for_analysis.RDS")
+  lbp.fc <- lbp$featureCounts$all
+  lbp.de <- mydata$datasets$lel$de
+  lbp.cv <- lbp$covariates$all
+
+# prep lbp for decon
+  my.thresh <-  c(1, 0.5, 0.1, 0.05, 0.005, 0.0005)
+  my.dacList <- list()
+  for (thresh in my.thresh){
+      dacList <- list("living" = lbp.de[adj.P.Val<thresh & logFC<0]$gene, 
+                     "dead" = lbp.de[adj.P.Val<thresh & logFC>0]$gene)
+      dacList$living <- as.character(sapply(dacList$living,function(x) strsplit(x,"[.]")[[1]][1]))
+      dacList$dead <- as.character(sapply(dacList$dead,function(x) strsplit(x,"[.]")[[1]][1]))
+      my.dacList[[paste("pt", thresh, sep="")]] <- dacList 
+  }
+  myinfo <- lbp.cv
+  identical(rownames(myinfo), colnames(lbp.fc)) #[1] TRUE
+  myinfo[myinfo$mymet.postmortem=="postmortem", "mymet.postmortem2"] <- "dead"
+  myinfo[myinfo$mymet.postmortem=="living", "mymet.postmortem2"] <- "living"
+  all_cell_type = myinfo$mymet.postmortem2
+
+# run
+  mysets <- names(mydata$voomObjects)
+  mysets <- mysets[!mysets %in% c("lbp", "lel")]
+  mydata$pctlbp.lel <- list()
+  for (set in mysets){
+      mydata$pctlbp.lel[[set]] <- list()
+      vobj <- mydata$voomObject[[set]]
+      for (thresh in my.thresh){
+          cat(set, thresh, '\n')
+          thresh.name <- paste("pt", thresh, sep="")
+          mydata$pctlbp.lel[[set]][[thresh.name]] <- pctlbp(mixVobj=vobj, refFC=lbp.fc, 
+                                                            refCT=all_cell_type, refDL=my.dacList[[thresh.name]])
+      }
+  }
+
+# save
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata")
+
+#+END_SRC
+
+
+* pca-based approach to LBP correction (alternative to the dtangle approach)
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# define different lbp deg sets to try
+  tmp <- mydata$datasets$lel$de[adj.P.Val<0.05]
+  tmp[,rank:=frank(P.Value)]
+  lbpdegs <- list("all"=tmp$gene, "top10"=tmp[rank<=10]$gene, "top100"=tmp[rank<=100]$gene, "top1000"=tmp[rank<=1000]$gene)
+
+# datasets 
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+
+# pca
+  mydata$pcalbpcorr <- list()
+  for(i in mysets){
+      print (i)
+      rob2 <- mydata[["residuals"]][[i]]$modelPlusNeu
+      for (j in names(lbpdegs)){
+          g <- lbpdegs[[j]]
+          g <- g[g %in% rownames(rob2)]
+          pca2 <- prcomp(t(rob2[g,]))
+          pca2 <- as.data.table(pca2$x, keep.rownames=T)[,.(rn,PC1)]
+          colnames(pca2)[2] <- paste0("rneu_",j)
+          if (j=='all') {
+              mydata$pcalbpcorr[[i]] <- pca2
+          } else {
+              mydata$pcalbpcorr[[i]] <- merge(mydata$pcalbpcorr[[i]], pca2)
+          }
+      }
+  }
+
+# make helper
+  helper <- list()
+  for(set in mysets){
+      print (set)
+      ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+      ex.type <- mydata[["datasets"]][[set]][["expression_matrices.type"]]
+      cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+      cv.covs <- mydata[["datasets"]][[set]][["cov.list"]]
+      cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+      ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+      ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+      ex.data <- mydata[["expression_matrices"]][[ex.name]]
+      de.form <- mydata[["datasets"]][[set]][["de.formula"]]
+      needcon <- mydata[["datasets"]][[set]][["needsContrast"]]
+      if (needcon) {
+          coninfo <- mydata[["datasets"]][[set]][["contrasts"]]
+      } else {
+          coninfo <- NA
+      }
+      if (length(cv.name)==1){
+          cv.data <- mydata[["covariates"]][[cv.name]]
+      } else {
+          cv.data <- mydata[["covariates"]][[cv.name[1]]][[cv.name[2]]]
+      }
+      if (ex.type == "voom"){
+          ex.data <- ex.data$E
+      }
+      ex.data <- ex.data[,ds.keep]
+      if ( "data.table" %in% class(cv.data) ){
+          cv.rnam <- cv.data[[ds.icol]]
+          cv.data <- as.data.frame(cv.data[, c(cv.phen, cv.covs), with=F])
+          rownames(cv.data) <- cv.rnam
+      } else {
+          cv.data <- cv.data[, c(cv.phen, cv.covs)]
+      }
+      cv.data <- cv.data[ds.keep,]
+      if (! identical(rownames(cv.data),colnames(ex.data))) {stop("covariate and expression cols are not equal")}
+      helper[[set]][["exp"]] <- ex.data
+      helper[[set]][["cnn"]] <- needcon
+      helper[[set]][["cni"]] <- coninfo
+      helper[[set]][["phe"]] <- cv.phen
+      helper[[set]][["cov"]] <- list()
+      helper[[set]][["frm"]] <- list()
+      helper[[set]][["cov"]][["withoutNeuWithoutPctlbp"]] <- cv.data
+      helper[[set]][["frm"]][["withoutNeuWithoutPctlbp"]] <- de.form
+      
+      ## add neuronal fraction to formula/covariates
+      ndat <- as.data.frame(mydata[["decon"]][[ex.name]][,.(rn, neuronal=GLU+GABA)])
+      rownames(ndat) <- ndat$rn
+      ndat$rn <- NULL
+      ndat <- ndat[rownames(cv.data), , drop=F]
+      if (! identical(rownames(ndat),rownames(cv.data))) {stop("neuronal and covariate rows are not equal")}
+      cv.data$neuronal <- ndat$neuronal
+      de.frm2 <- as.formula(paste0("~", as.character(de.form)[2], " + neuronal"))
+      helper[[set]][["cov"]][["withoutPctlbp"]] <- cv.data
+      helper[[set]][["frm"]][["withoutPctlbp"]] <- de.frm2
+
+      ## add pctlbp to formula/covariates - with neuronal
+      ldat <- as.data.frame(mydata[["pcalbpcorr"]][[set]][,.(rn, rneu_all)])
+      rownames(ldat) <- ldat$rn
+      ldat$rn <- NULL
+      cv.dat2 <- cv.data[rownames(ldat),]
+      cv.dat2$pctlbp <- ldat$rneu_all
+      de.frm3 <- as.formula(paste0("~", as.character(de.frm2)[2], " + pctlbp"))
+      helper[[set]][["cov"]][["withPctlbp"]] <- cv.dat2
+      helper[[set]][["frm"]][["withPctlbp"]] <- de.frm3
+  }
+
+# de
+  for (i in mysets){
+      exp1 <- helper[[i]][["exp"]]
+      cnn1 <- helper[[i]][["cnn"]]
+      cni1 <- helper[[i]][["cni"]]
+      phe1 <- helper[[i]][["phe"]]
+      set1 <- helper[[i]][["set"]]
+      cv1b <- helper[[i]][["cov"]][["withPctlbp"]]
+      fm1b <- helper[[i]][["frm"]][["withPctlbp"]]
+      design1b <- model.matrix(fm1b, cv1b)
+      colnames(design1b) <- make.names(colnames(design1b))
+      exp1 <- exp1[,rownames(design1b)]
+      lmgroup1b <- lmFit(exp1, design1b)
+      if (cnn1){
+          contrasts1b <- makeContrasts(cni1, levels=design1b)
+          eBfit1b <- eBayes(lmgroup1b)
+          lmgroup_DE1b <- contrasts.fit(eBfit1b, contrasts1b)
+          lmgroup_DE1b <- eBayes(lmgroup_DE1b)
+          coefcol1b <- 1
+      } else {
+          lmgroup_DE1b <- eBayes(lmgroup1b)
+          coefcol1b <- which(gregexpr(phe1, colnames(design1b))>0)
+      }
+      Group_DE_tab1b <- topTable(lmgroup_DE1b, coef=coefcol1b, number=nrow(lmgroup_DE1b))
+      de1b <- data.table( gene = rownames(Group_DE_tab1b), Group_DE_tab1b)
+      de1b[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      mydata$datasets[[i]]$de$pcaLBPcorr <- de1b
+  }
+
+# correlation with corr using detangle
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("ALZ_ROSMAP", "ALZ_MAYO", "ALZ_MSB10", "ALZ_MSB36", "SCZ_CMCPFC", "SCZ_HBCC")
+  check <- c()
+  for (i in 1:length(mysets)){
+      s <- mysets[i]
+      n <- myname[i]
+      de1 <- mydata$datasets[[s]]$de$noLBPcorr
+      de2 <- mydata$datasets[[s]]$de$yesLBPcorr
+      de3 <- mydata$datasets[[s]]$de$pcaLBPcorr
+      colnames(de3) <- paste0(colnames(de3), ".pcalbpCorr")
+      colnames(de3)[1] <- "gene"
+      dem <- merge(de1, de2, by='gene', suffixes=c(".nolbpCorr", ".lbpCorr"))
+      dem <- merge(dem, de3, by='gene')
+  }
+
+## save
+#  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata")
+
+#+END_SRC
+
+
+* code for running DE and adding to mydata 
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# cmc and ampad overlaps
+  x1 <- "/sc/arion/projects/psychgen/methods/gdde/data/dna/OLD/combined/mer.hg19.sharedsnps.fixed.pr.gtcheck.out.ERR"
+  x2 <- "/sc/arion/projects/psychgen/methods/gdde/data/dna/OLD/combined/mer.hg19.sharedsnps.fixed.pr.gtcheck.out.CN"
+  err <- fread(x1)[,.(id1=V4, id2=V5, err=V2, nsites=V3)]
+  cnn <- fread(x2)[,.(id1=V5, id2=V6, dis=V2, nsites=V3)]
+  mer <- merge(err, cnn)
+  mat <- mer[err<0.2]
+  cmcamp <- unique(gsub("cmc_", "", mat[grep("cmc", id2)]$id2))
+  mydata$covariates[["cmc|pfc"]][Individual_ID %in% cmcamp]
+  rmme <-  mydata$covariates[["cmc|pfc"]][Individual_ID %in% cmcamp]$SampleID
+  mydata[["datasets"]][["cmc|pfc|scz"]][["ampadOverlaps"]] <- rmme
+
+# define sets to compare to one another
+  mysets <- c("lel", "ros", "amp|10|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+
+# make helper
+  helper <- list()
+  for(set in mysets){
+      print (set)
+      ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+      ex.type <- mydata[["datasets"]][[set]][["expression_matrices.type"]]
+      cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+      cv.covs <- mydata[["datasets"]][[set]][["cov.list"]]
+      cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+      ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+      if (set == "cmc|pfc|scz"){ds.keep <- ds.keep[!ds.keep %in% mydata[["datasets"]][[set]][["ampadOverlaps"]]]}
+      ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+      ex.data <- mydata[["expression_matrices"]][[ex.name]]
+      de.form <- mydata[["datasets"]][[set]][["de.formula"]]
+      needcon <- mydata[["datasets"]][[set]][["needsContrast"]]
+      if (needcon) {
+          coninfo <- mydata[["datasets"]][[set]][["contrasts"]]
+      } else {
+          coninfo <- NA
+      }
+      if (length(cv.name)==1){
+          cv.data <- mydata[["covariates"]][[cv.name]]
+      } else {
+          cv.data <- mydata[["covariates"]][[cv.name[1]]][[cv.name[2]]]
+      }
+      if (ex.type == "voom"){
+          ex.data <- ex.data$E
+      }
+      ex.data <- ex.data[,ds.keep]
+      if ( "data.table" %in% class(cv.data) ){
+          cv.rnam <- cv.data[[ds.icol]]
+          cv.data <- as.data.frame(cv.data[, c(cv.phen, cv.covs), with=F])
+          rownames(cv.data) <- cv.rnam
+      } else {
+          cv.data <- cv.data[, c(cv.phen, cv.covs)]
+      }
+      cv.data <- cv.data[ds.keep,]
+      if (! identical(rownames(cv.data),colnames(ex.data))) {
+          stop("covariate and expression cols are not equal")
+      } else {
+          if(set=="lel") {
+              helper[[set]][["exp"]] <- ex.data
+              helper[[set]][["cnn"]] <- needcon
+              helper[[set]][["cni"]] <- coninfo
+              helper[[set]][["phe"]] <- cv.phen        
+              helper[[set]][["cov"]] <- cv.data
+              helper[[set]][["frm"]] <- de.form
+          } else {
+              helper[[set]][["exp"]] <- ex.data
+              helper[[set]][["cnn"]] <- needcon
+              helper[[set]][["cni"]] <- coninfo
+              helper[[set]][["phe"]] <- cv.phen
+              helper[[set]][["cov"]] <- list()
+              helper[[set]][["frm"]] <- list()
+              helper[[set]][["cov"]][["withoutNeuWithoutPctlbp"]] <- cv.data
+              helper[[set]][["frm"]][["withoutNeuWithoutPctlbp"]] <- de.form
+
+              ## add neuronal fraction to formula/covariates
+              ndat <- as.data.frame(mydata[["decon"]][[ex.name]][,.(rn, neuronal=GLU+GABA)])
+              rownames(ndat) <- ndat$rn
+              ndat$rn <- NULL
+              ndat <- ndat[rownames(cv.data), , drop=F]
+              if (! identical(rownames(ndat),rownames(cv.data))) {
+                  stop("neuronal and covariate rows are not equal")
+              } else {
+                  cv.data$neuronal <- ndat$neuronal
+                  de.frm2 <- as.formula(paste0("~", as.character(de.form)[2], " + neuronal"))
+                  helper[[set]][["cov"]][["withoutPctlbp"]] <- cv.data
+                  helper[[set]][["frm"]][["withoutPctlbp"]] <- de.frm2
+              }
+
+              ## add pctlbp to formula/covariates - without neuronal
+              ldat <- as.data.frame(mydata[["pctlbp.lel"]][[ex.name]][["pt1"]][,.(rn=SampleID, dead)])
+              rownames(ldat) <- ldat$rn
+              ldat$rn <- NULL
+              ldat <- ldat[rownames(cv.data), , drop=F]
+              if (! identical(rownames(ldat),rownames(cv.data))) {
+                  stop("pctlbp and covariate rows are not equal")
+              } else {
+                  cv.data$pctlbp <- ldat$dead
+                  de.frm2b <- as.formula(paste0("~", as.character(de.form)[2], " + pctlbp"))
+                  helper[[set]][["cov"]][["withPctlbpWithoutNeuronal"]] <- cv.data
+                  helper[[set]][["frm"]][["withPctlbpWithoutNeuronal"]] <- de.frm2b
+              }
+
+              ## add pctlbp to formula/covariates - with neuronal
+              ldat <- as.data.frame(mydata[["pctlbp.lel"]][[ex.name]][["pt1"]][,.(rn=SampleID, dead)])
+              rownames(ldat) <- ldat$rn
+              ldat$rn <- NULL
+              ldat <- ldat[rownames(cv.data), , drop=F]
+              if (! identical(rownames(ldat),rownames(cv.data))) {
+                  stop("pctlbp and covariate rows are not equal")
+              } else {
+                  cv.data$pctlbp <- ldat$dead
+                  de.frm3 <- as.formula(paste0("~", as.character(de.frm2)[2], " + pctlbp"))
+                  helper[[set]][["cov"]][["withPctlbp"]] <- cv.data
+                  helper[[set]][["frm"]][["withPctlbp"]] <- de.frm3
+            }
+        }
+    }
+  }
+
+# datasets 
+  mysets <- c("ros", "amp|10|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+
+# de
+  for (i in mysets){
+      exp1 <- helper[[i]][["exp"]]
+      cnn1 <- helper[[i]][["cnn"]]
+      cni1 <- helper[[i]][["cni"]]
+      phe1 <- helper[[i]][["phe"]]
+      set1 <- helper[[i]][["set"]]
+      cv1x <- helper[[i]][["cov"]][["withoutNeuWithoutPctlbp"]]
+      cv1a <- helper[[i]][["cov"]][["withoutPctlbp"]]
+      cv1b <- helper[[i]][["cov"]][["withPctlbp"]]
+      cv1c <- helper[[i]][["cov"]][["withPctlbpWithoutNeuronal"]]
+      fm1x <- helper[[i]][["frm"]][["withoutNeuWithoutPctlbp"]]
+      fm1a <- helper[[i]][["frm"]][["withoutPctlbp"]]
+      fm1b <- helper[[i]][["frm"]][["withPctlbp"]]
+      fm1c <- helper[[i]][["frm"]][["withPctlbpWithoutNeuronal"]]
+      design1x <- model.matrix(fm1x, cv1x)
+      design1a <- model.matrix(fm1a, cv1a)
+      design1b <- model.matrix(fm1b, cv1b)
+      design1c <- model.matrix(fm1c, cv1c)
+      colnames(design1x) <- make.names(colnames(design1x))
+      colnames(design1a) <- make.names(colnames(design1a))
+      colnames(design1b) <- make.names(colnames(design1b))
+      colnames(design1c) <- make.names(colnames(design1c))
+      exp1 <- exp1[,rownames(design1a)]
+      lmgroup1x <- lmFit(exp1, design1x)
+      lmgroup1a <- lmFit(exp1, design1a)
+      lmgroup1b <- lmFit(exp1, design1b)
+      lmgroup1c <- lmFit(exp1, design1c)
+      if (cnn1){
+          contrasts1x <- makeContrasts(cni1, levels=design1x)
+          contrasts1a <- makeContrasts(cni1, levels=design1a)
+          contrasts1b <- makeContrasts(cni1, levels=design1b)
+          contrasts1c <- makeContrasts(cni1, levels=design1c)
+          eBfit1x <- eBayes(lmgroup1x)
+          eBfit1a <- eBayes(lmgroup1a)
+          eBfit1b <- eBayes(lmgroup1b)
+          eBfit1c <- eBayes(lmgroup1c)
+          lmgroup_DE1x <- contrasts.fit(eBfit1x, contrasts1x)
+          lmgroup_DE1a <- contrasts.fit(eBfit1a, contrasts1a)
+          lmgroup_DE1b <- contrasts.fit(eBfit1b, contrasts1b)
+          lmgroup_DE1c <- contrasts.fit(eBfit1c, contrasts1c)
+          lmgroup_DE1x <- eBayes(lmgroup_DE1x)
+          lmgroup_DE1a <- eBayes(lmgroup_DE1a)
+          lmgroup_DE1b <- eBayes(lmgroup_DE1b)
+          lmgroup_DE1c <- eBayes(lmgroup_DE1c)
+          coefcol1x <- 1
+          coefcol1a <- 1
+          coefcol1b <- 1
+          coefcol1c <- 1
+      } else {
+          lmgroup_DE1x <- eBayes(lmgroup1x)
+          lmgroup_DE1a <- eBayes(lmgroup1a)
+          lmgroup_DE1b <- eBayes(lmgroup1b)
+          lmgroup_DE1c <- eBayes(lmgroup1c)
+          coefcol1x <- which(gregexpr(phe1, colnames(design1x))>0)
+          coefcol1a <- which(gregexpr(phe1, colnames(design1a))>0)
+          coefcol1b <- which(gregexpr(phe1, colnames(design1b))>0)
+          coefcol1c <- which(gregexpr(phe1, colnames(design1c))>0)
+      }
+      Group_DE_tab1x <- topTable(lmgroup_DE1x, coef=coefcol1x, number=nrow(lmgroup_DE1x))
+      Group_DE_tab1a <- topTable(lmgroup_DE1a, coef=coefcol1a, number=nrow(lmgroup_DE1a))
+      Group_DE_tab1b <- topTable(lmgroup_DE1b, coef=coefcol1b, number=nrow(lmgroup_DE1b))
+      Group_DE_tab1c <- topTable(lmgroup_DE1c, coef=coefcol1c, number=nrow(lmgroup_DE1c))
+      de1x <- data.table( gene = rownames(Group_DE_tab1x), Group_DE_tab1x)
+      de1a <- data.table( gene = rownames(Group_DE_tab1a), Group_DE_tab1a)
+      de1b <- data.table( gene = rownames(Group_DE_tab1b), Group_DE_tab1b)
+      de1c <- data.table( gene = rownames(Group_DE_tab1c), Group_DE_tab1c)
+      de1x[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de1a[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de1b[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de1c[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      mydata$datasets[[i]]$de <- list("noLBPcorr"=de1a, "yesLBPcorr"=de1b, "noNEUcorr.noLBPcorr"=de1x, "noNEUcorr.yesLBPcorr"=de1c)  
+  }
+
+# save
+  save(mydata, file="/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata")
+
+#+END_SRC
+
+
+* code for making "fireworks" plots to show DE signature overlap between LBP and scz/alz
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# datasets 
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "cmc|acc|scz", "hbc|pfc|scz")
+
+# volcanoes
+  lbp.de <- mydata$datasets$lel$de
+  lbp.de.slim <- lbp.de[,.(gene, logFC.lbp = logFC, P.Value.lbp = P.Value)] 
+  pdf("~/www/figures/lbp/scz_alz_volcanoes_colored_by_lbp.pdf")
+  for (i in mysets){
+      de1a <- mydata$datasets[[i]]$de$noLBPcorr
+      de1b <- mydata$datasets[[i]]$de$yesLBPcorr
+      de1a.slim <- de1a[,.(gene, logFC.ds1=logFC, P.Value.ds1=P.Value)]
+      de1b.slim <- de1b[,.(gene, logFC.ds1.lbpCorr=logFC, P.Value.ds1.lbpCorr=P.Value)]
+      de1.slim <- merge(de1a.slim, de1b.slim, by="gene")
+      mer <- merge(de1.slim, lbp.de.slim, by="gene")
+      mer$ds <- i
+      p0x <- paste("logFC for ",  i, " without LBP correction", sep="")
+      p0y <- paste("-log10(p) for ", i, " without LBP correction", sep="")
+      p0l <- "logFC for LBP"
+      p0 <- ggplot(mer, aes(logFC.ds1, -log10(P.Value.ds1) )) + 
+          geom_point(pch=21, size=5, aes(fill=logFC.lbp, col=logFC.lbp)) + theme_base() +
+          scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+          scale_color_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+          ylab(p0y) + xlab(p0x) + labs(fill=p0l) + theme(legend.title = element_text(size = 8))
+      p1x <- paste("logFC for ", i, " with LBP correction", sep="")
+      p1y <- paste("-log10(p) for ", i, " with LBP correction", sep="")
+      p1l <- "logFC for LBP"
+      p1 <- ggplot(mer, aes(logFC.ds1.lbpCorr, -log10(P.Value.ds1.lbpCorr) )) + 
+          geom_point(pch=21, size=5, aes(fill=logFC.lbp)) + theme_base() +
+          scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+          ylab(p1y) + xlab(p1x) + labs(fill=p1l) + theme(legend.title = element_text(size = 8))
+      show(p0)
+      ##show(p1)
+  }
+  dev.off()
+
+# volcanoes using full data 
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("ALZ_ROSMAP", "ALZ_MAYO", "ALZ_MSB10", "ALZ_MSB36", "SCZ_CMC", "SCZ_HBCC")
+  lbp.de <- readRDS("/sc/arion/projects/psychgen2/lbp/scratch/awc_fulldata.RDS")$de
+  lbp.de.slim <- lbp.de[,.(gene, logFC.lbp = logFC, P.Value.lbp = P.Value)] 
+  pdf("~/www/figures/lbp/scz_alz_volcanoes_colored_by_lbpFull.pdf")
+  for (h in 1:length(mysets)){
+      i <- mysets[h]
+      j <- myname[h]
+      de1a <- mydata$datasets[[i]]$de$noLBPcorr
+      de1b <- mydata$datasets[[i]]$de$yesLBPcorr
+      de1a.slim <- de1a[,.(gene, logFC.ds1=logFC, P.Value.ds1=P.Value)]
+      de1b.slim <- de1b[,.(gene, logFC.ds1.lbpCorr=logFC, P.Value.ds1.lbpCorr=P.Value)]
+      de1.slim <- merge(de1a.slim, de1b.slim, by="gene")
+      mer <- merge(de1.slim, lbp.de.slim, by="gene")
+      mer$ds <- i
+      p0x <- paste0(j, " logFC")
+      p0y <- paste0(j, " -log10(p)")
+      p0l <- "logFC for LBP"
+      p0 <- ggplot(mer, aes(logFC.ds1, -log10(P.Value.ds1) )) + 
+          geom_point(pch=21, size=5, aes(fill=logFC.lbp, col=logFC.lbp)) + theme_base() +
+          scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab", guide = "none" ) + 
+          scale_color_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+          ylab(p0y) + xlab(p0x) + labs(fill=p0l) + theme(legend.title = element_text(size = 8))
+      show(p0)
+  }
+  dev.off()
+
+
+#+END_SRC
+
+
+* code for making heatmap to visualize overlap between LBP and scz/alz DE signatures
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# datasets 
+  mysets <- c("lel", "ros", "amp|10|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("LBP", "ALZ_ROSMAP", "ALZ_MSB10", "SCZ_CMCPFC", "SCZ_HBCC")
+
+# prep corr matrices
+  comparisons <- as.data.table(t(combn(mysets, 2)))[,.(set1=V1, set2=V2)]
+  mtx <- matrix(NA, nrow=length(mysets), ncol=length(mysets))
+  mtp <- matrix(NA, nrow=length(mysets), ncol=length(mysets))
+  colnames(mtx) <- rownames(mtx) <- colnames(mtp) <- rownames(mtp) <- mysets
+  diag(mtx) <- 1
+  diag(mtp) <- 0
+
+# spearman correlations between datasets - no lbp correction
+  for (i in 1:nrow(comparisons)){
+      s1 <- comparisons[i]$set1
+      s2 <- comparisons[i]$set2
+      if (s1=="lel") {
+          de1 <- mydata$datasets[[s1]]$de
+      } else {
+          de1 <- mydata$datasets[[s1]]$de$noNEUcorr.noLBPcorr
+      }
+      de2 <- mydata$datasets[[s2]]$de$noNEUcorr.noLBPcorr
+      dem <- merge(de1, de2, by='gene', suffixes=c(".ds1", ".ds2"))
+      spr <- cor.test(dem$logFC.ds1, dem$logFC.ds2, method="spearman")
+      mtx[s1,s2] <-  mtx[s2,s1] <- spr$estimate  
+      mtp[s1,s2] <-  mtp[s2,s1] <- spr$p.value
+  }
+
+# plot
+  colnames(mtx) <- rownames(mtx) <- colnames(mtp) <- rownames(mtp) <- myname
+  pp <- corrplot(mtx, type="upper", order="hclust", hclust.method="ward.D") 
+  mx2 <- mx2[rownames(pp), colnames(pp)]
+  mp2 <- mp2[rownames(pp), colnames(pp)]
+  pdf("~/www/figures/lbp/de_corr_with_without_lbpcorrection.pdf")
+    corrplot(mtx, type="upper", order="hclust", hclust.method="ward.D", method="shade", 
+             addCoef.col="black", p.mat=mtp, sig.level=0.05, pch.col="red") 
+  dev.off()
+
+# spearman correlations between datasets - no lbp correction - different deg thresholds
+  comparisons <- as.data.table(t(combn(mysets, 2)))[,.(set1=V1, set2=V2)]
+  mythresh <- c(1, 0.5, 0.05, 0.0005, 0.00005, 0.000005, 0.0000005)
+  mymtx <- list()
+  for (i in mythresh){
+      nam <- paste0("pt", i)
+      mtx <- matrix(NA, nrow=length(mysets), ncol=length(mysets))
+      mtp <- matrix(NA, nrow=length(mysets), ncol=length(mysets))
+      colnames(mtx) <- rownames(mtx) <- colnames(mtp) <- rownames(mtp) <- mysets
+      diag(mtx) <- 1
+      diag(mtp) <- 0
+      mymtx[[nam]] <- list("cor"=mtx, "pvl"=mtp)
+  }
+  for (i in mythresh){
+      nam <- paste0("pt", i)
+      for (j in 1:nrow(comparisons)){
+          s1 <- comparisons[j]$set1
+          s2 <- comparisons[j]$set2
+          de1 <- mydata$datasets[[s1]]$de$noLBPcorr
+          de2 <- mydata$datasets[[s2]]$de$noLBPcorr
+          dem <- merge(de1, de2, by='gene', suffixes=c(".ds1", ".ds2"))
+          dem <- dem[P.Value.ds1<i]
+          spr <- cor.test(dem$logFC.ds1, dem$logFC.ds2, method="spearman")
+          mymtx[[nam]][["cor"]][s1,s2] <-  mymtx[[nam]][["cor"]][s2,s1] <- spr$estimate  
+          mymtx[[nam]][["pvl"]][s1,s2] <-  mymtx[[nam]][["pvl"]][s2,s1] <- spr$p.value
+      }
+  }
+  pdf("~/www/figures/lbp/de_corr_with_without_lbpcorrection_diffthresh.pdf")
+  for (i in mythresh){
+      nam <- paste0("pt", i)
+      mtx <- mymtx[[nam]][["cor"]]
+      mtp <- mymtx[[nam]][["pvl"]]
+      corrplot(mtx, type="upper", order="hclust", hclust.method="ward.D", method="shade", 
+               addCoef.col="black", p.mat=mtp, sig.level=0.05, pch.col="red") 
+  }
+  dev.off()
+
+
+#+END_SRC
+
+
+* code for using layered scatter plots to visualize overlkap between LBP and scz/alz DE signatures - QUARTILES
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  suppressMessages(library(hutils))
+  suppressMessages(library(ggpubr))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# run with/without lbp corr
+  mysets <- c("lel", "ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("LBP", "ALZ_ROSMAP", "ALZ_MAYO", "ALZ_MSB10", "ALZ_MSB36", "SCZ_CMCPFC", "SCZ_HBCC")
+  comparisons <- as.data.table(t(combn(mysets, 2)))[,.(set1=V1, set2=V2)]
+  pdf("~/www/figures/lbp/de_corr_with_without_lbpcorrection_diffthresh_scatter.pdf")
+  for (j in 1:nrow(comparisons)){
+      s1 <- comparisons[j]$set1
+      s2 <- comparisons[j]$set2
+      n1 <- myname[which(mysets == s1)]
+      n2 <- myname[which(mysets == s2)]
+      if (s1=="lel"){
+          de1 <- mydata$datasets[[s1]]$de
+      } else {
+          de1 <- mydata$datasets[[s1]]$de$noLBPcorr
+      }
+      de2 <- mydata$datasets[[s2]]$de$noLBPcorr
+      dem <- merge(de1, de2, by='gene', suffixes=c(".ds1", ".ds2"))
+      dem <- mutate_ntile(dem, P.Value.ds1, n = 4)
+      dem <- mutate_ntile(dem, P.Value.ds2, n = 4)
+      dem[,P.Value.ds1Quartile:=as.factor(P.Value.ds1Quartile)]
+      dem[,P.Value.ds2Quartile:=as.factor(P.Value.ds2Quartile)]
+      inf.de1 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\ncolored by: ",n1, "\nWithout LBP Correction")
+      inf.de2 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\ncolored by: ",n2, "\nWithout LBP Correction")
+      p1 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                      fill="P.Value.ds1Quartile", col="P.Value.ds1Quartile", 
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de1) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                facet_wrap(~P.Value.ds1Quartile)
+      p2 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                      fill="P.Value.ds2Quartile", col="P.Value.ds2Quartile", 
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de2) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                facet_wrap(~P.Value.ds2Quartile)
+      if (s1 !="lel"){
+          de1 <- mydata$datasets[[s1]]$de$yesLBPcorr
+          de2 <- mydata$datasets[[s2]]$de$yesLBPcorr
+          dem <- merge(de1, de2, by='gene', suffixes=c(".ds1", ".ds2"))
+          dem <- mutate_ntile(dem, P.Value.ds1, n = 4)
+          dem <- mutate_ntile(dem, P.Value.ds2, n = 4)
+          dem[,P.Value.ds1Quartile:=as.factor(P.Value.ds1Quartile)]
+          dem[,P.Value.ds2Quartile:=as.factor(P.Value.ds2Quartile)]
+          inf.de1 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\ncolored by: ",n1, "\nWith LBP Correction")
+          inf.de2 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\ncolored by: ",n2, "\nWith LBP Correction")
+          p3 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                      fill="P.Value.ds1Quartile", col="P.Value.ds1Quartile", 
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+              geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+              geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+              geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+              ggtitle(inf.de1) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+              facet_wrap(~P.Value.ds1Quartile)
+          p4 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                          fill="P.Value.ds2Quartile", col="P.Value.ds2Quartile", 
+                          shape=21, size=5, alpha=0.1, 
+                          add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+              geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+              geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+              geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+              ggtitle(inf.de2) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+              facet_wrap(~P.Value.ds2Quartile)
+          show(p1)
+          show(p3)
+          show(p2)
+          show(p4)
+      } else { 
+          show(p1)
+          show(p2)
+      }
+  }
+  dev.off()
+
+# remake colored by lbp status
+  lbpup <- mydata$datasets$lel$de[adj.P.Val<0.05 & logFC>0]$gene
+  lbpdw <- mydata$datasets$lel$de[adj.P.Val<0.05 & logFC<0]$gene
+  lbpdu <- c(lbpup, lbpdw)
+  lbpfc <- mydata$datasets$lel$de[,.(gene, logFC.lbp=logFC)]
+  pdf("~/www/figures/lbp/de_corr_without_lbpcorrection_diffthresh_scatter_colByLbp.pdf")
+  for (j in 1:nrow(comparisons)){
+      s1 <- comparisons[j]$set1
+      s2 <- comparisons[j]$set2
+      n1 <- myname[which(mysets == s1)]
+      n2 <- myname[which(mysets == s2)]
+      if (s1=="lel"){
+          de1 <- mydata$datasets[[s1]]$de
+      } else {
+          de1 <- mydata$datasets[[s1]]$de$noLBPcorr
+      }
+      de2 <- mydata$datasets[[s2]]$de$noLBPcorr
+      dem <- merge(de1, de2, by='gene', suffixes=c(".ds1", ".ds2"))
+      dem <- mutate_ntile(dem, P.Value.ds1, n = 4)
+      dem <- mutate_ntile(dem, P.Value.ds2, n = 4)
+      dem[,P.Value.ds1Quartile:=as.factor(P.Value.ds1Quartile)]
+      dem[,P.Value.ds2Quartile:=as.factor(P.Value.ds2Quartile)]
+      dem[, lbpStatus:="notDE"]
+      dem[gene %in% lbpup, lbpStatus:="upInDed"]
+      dem[gene %in% lbpdw, lbpStatus:="upInLiv"]
+      dem <- merge(dem, lbpfc)
+      inf.de1 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\nfaceted by: ",n1, "\nWithout LBP Correction")
+      inf.de2 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\nfaceted by: ",n2, "\nWithout LBP Correction")
+      p1 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                      fill="logFC.lbp", col="logFC.lbp", 
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de1) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                scale_color_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                facet_wrap(~P.Value.ds1Quartile)
+      p2 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                      fill="logFC.lbp", col="logFC.lbp",
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de2) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                scale_color_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                facet_wrap(~P.Value.ds2Quartile)
+      show(p1)
+      show(p2)
+  }
+  dev.off()
+
+
+#+END_SRC
+
+
+* code for using layered scatter plots to visualize overlkap between LBP and scz/alz DE signatures - DECILES
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  suppressMessages(library(hutils))
+  suppressMessages(library(ggpubr))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# run without lbp corr
+  mysets <- c("lel", "ros", "amp|10|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("LBP", "ALZ_ROSMAP", "ALZ_MSB10", "SCZ_CMCPFC", "SCZ_HBCC")
+  comparisons <- as.data.table(t(combn(mysets, 2)))[,.(set1=V1, set2=V2)]
+  pdf("~/www/figures/lbp/de_corr_with_without_lbpcorrection_diffthresh_scatter_deciles.pdf")
+  for (j in 1:nrow(comparisons)){
+      s1 <- comparisons[j]$set1
+      s2 <- comparisons[j]$set2
+      n1 <- myname[which(mysets == s1)]
+      n2 <- myname[which(mysets == s2)]
+      if (s1=="lel"){
+          de1 <- mydata$datasets[[s1]]$de
+      } else {
+          de1 <- mydata$datasets[[s1]]$de$noNEUcorr.noLBPcorr
+      }
+      de2 <- mydata$datasets[[s2]]$de$noLBPcorr
+      dem <- merge(de1, de2, by='gene', suffixes=c(".ds1", ".ds2"))
+      dem <- mutate_ntile(dem, P.Value.ds1, n = 10)
+      dem <- mutate_ntile(dem, P.Value.ds2, n = 10)
+      dem[,P.Value.ds1Decile:=as.factor(P.Value.ds1Decile)]
+      dem[,P.Value.ds2Decile:=as.factor(P.Value.ds2Decile)]
+      dem1 <- dem[P.Value.ds1Decile %in% c("1", "10")]
+      dem2 <- dem[P.Value.ds2Decile %in% c("1", "10")]
+      inf.de1 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\ncolored by: ",n1, "\nWithout LBP Correction")
+      inf.de2 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\ncolored by: ",n2, "\nWithout LBP Correction")
+      p1 <- ggscatter(dem1, x="logFC.ds1", y="logFC.ds2", 
+                      fill="P.Value.ds1Decile", col="P.Value.ds1Decile", 
+                      shape=21, size=5, alpha=0.1,
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de1) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                facet_wrap(~P.Value.ds1Decile, scales="free")
+      p2 <- ggscatter(dem2, x="logFC.ds1", y="logFC.ds2",
+                      fill="P.Value.ds2Decile", col="P.Value.ds2Decile", 
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de2) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                facet_wrap(~P.Value.ds2Decile, scales="free")
+      show(p1)
+      show(p2)      
+  }
+  dev.off()
+
+# remake colored by lbp status
+  lbpup <- mydata$datasets$lel$de[adj.P.Val<0.05 & logFC>0]$gene
+  lbpdw <- mydata$datasets$lel$de[adj.P.Val<0.05 & logFC<0]$gene
+  lbpdu <- c(lbpup, lbpdw)
+  lbpfc <- mydata$datasets$lel$de[,.(gene, logFC.lbp=logFC)]
+  pdf("~/www/figures/lbp/de_corr_without_lbpcorrection_diffthresh_scatter_colByLbp.pdf")
+  for (j in 1:nrow(comparisons)){
+      s1 <- comparisons[j]$set1
+      s2 <- comparisons[j]$set2
+      n1 <- myname[which(mysets == s1)]
+      n2 <- myname[which(mysets == s2)]
+      if (s1=="lel"){
+          de1 <- mydata$datasets[[s1]]$de
+      } else {
+          de1 <- mydata$datasets[[s1]]$de$noLBPcorr
+      }
+      de2 <- mydata$datasets[[s2]]$de$noLBPcorr
+      dem <- merge(de1, de2, by='gene', suffixes=c(".ds1", ".ds2"))
+      dem <- mutate_ntile(dem, P.Value.ds1, n = 4)
+      dem <- mutate_ntile(dem, P.Value.ds2, n = 4)
+      dem[,P.Value.ds1Quartile:=as.factor(P.Value.ds1Quartile)]
+      dem[,P.Value.ds2Quartile:=as.factor(P.Value.ds2Quartile)]
+      dem[, lbpStatus:="notDE"]
+      dem[gene %in% lbpup, lbpStatus:="upInDed"]
+      dem[gene %in% lbpdw, lbpStatus:="upInLiv"]
+      dem <- merge(dem, lbpfc)
+      inf.de1 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\nfaceted by: ",n1, "\nWithout LBP Correction")
+      inf.de2 <- paste0("x-axis: ", n1, "\ny-axis: ", n2, "\nfaceted by: ",n2, "\nWithout LBP Correction")
+      p1 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                      fill="logFC.lbp", col="logFC.lbp", 
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de1) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                scale_color_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                facet_wrap(~P.Value.ds1Quartile)
+      p2 <- ggscatter(dem, x="logFC.ds1", y="logFC.ds2", 
+                      fill="logFC.lbp", col="logFC.lbp",
+                      shape=21, size=5, alpha=0.1, 
+                      add="reg.line", cor.coef = TRUE, cor.method = "pearson", conf.int = TRUE, fullrange=TRUE) + 
+                geom_abline(intercept = 0, slope = 1, color="gray", linetype="dashed", size=1) + 
+                geom_vline(xintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                geom_hline(yintercept = 0, color="gray", linetype="dashed", size=0.25) +
+                ggtitle(inf.de2) + xlab(paste0("logFC in ", n1)) + ylab(paste0("logFC in ", n2)) +
+                scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                scale_color_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+                facet_wrap(~P.Value.ds2Quartile)
+      show(p1)
+      show(p2)
+  }
+  dev.off()
+
+
+#+END_SRC
+
+
+* code for randomly doing DE between living and PM (could be used to later convince self LBP correction isn't random)
+
+#+BEGIN_SRC R
+
+# setup
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  setwd("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/NPP536")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# load lel data
+  meta <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/meta.RDS")
+  ##meta <- meta[mymet_bank %in% c("Columbia","Harvard","Sinai_dryice","Sinai_rnalater")] 
+  myded <- meta[mymet_postmortem=="postmortem"]$ISM_SEMA4
+  myliv <- meta[mymet_postmortem=="living"]$ISM_SEMA4
+  myhar <- meta[mymet_bank=="Harvard"]$ISM_SEMA4
+  mycol <- meta[mymet_bank=="Columbia"]$ISM_SEMA4
+  ##myvar <- c("ISM_SEMA4", "mymet_sex", "mymet_rin", "neuronal", "RNASeqMetrics_PCT_INTRONIC_BASES", "bank")
+  myvar <- c("ISM_SEMA4", "mymet_sex", "mymet_rin", "neuronal", "RNASeqMetrics_PCT_INTRONIC_BASES")
+  lvmet <- meta[ISM_SEMA4 %in% myliv]
+  pmmet <- meta[ISM_SEMA4 %in% myded]
+  hvmet <- meta[mymet_bank == "Harvard"]
+  clmet <- meta[mymet_bank == "Columbia"]
+  ##meta <- meta[mymet_bank %in% c("Columbia","Harvard","Sinai_dryice","Sinai_rnalater")] 
+  ##lvmet[,bank:=0]
+  ##pmmet[,bank:=0]
+  ##lvmet[mymet_bank=="Sinai_dryice", bank:=1] 
+  ##pmmet[mymet_bank=="Columbia", bank:=1]
+  lvcov <- as.data.frame(lvmet[,myvar,with=F])
+  pmcov <- as.data.frame(pmmet[,myvar,with=F])
+  hvcov <- as.data.frame(hvmet[,myvar,with=F])
+  clcov <- as.data.frame(clmet[,myvar,with=F])
+  rownames(lvcov) <- lvcov$ISM_SEMA4
+  rownames(pmcov) <- pmcov$ISM_SEMA4
+  rownames(hvcov) <- hvcov$ISM_SEMA4
+  rownames(clcov) <- clcov$ISM_SEMA4
+  lvcov$ISM_SEMA4 <- NULL
+  pmcov$ISM_SEMA4 <- NULL
+  hvcov$ISM_SEMA4 <- NULL
+  clcov$ISM_SEMA4 <- NULL
+  lvexp <- mydata$voomObject$lel$E[,myliv]
+  pmexp <- mydata$voomObject$lel$E[,myded]
+  hvexp <- mydata$voomObject$lel$E[,myhar]
+  clexp <- mydata$voomObject$lel$E[,mycol]
+
+# de
+  gutcheck <- c()
+  set.seed(666)
+  counter <- 1
+  while (counter <= 100){
+      print(counter)
+      lvcov$phe <- rbinom(nrow(lvcov), 1, 0.5)
+      pmcov$phe <- rbinom(nrow(pmcov), 1, 0.5)
+      hvcov$phe <- rbinom(nrow(hvcov), 1, 0.5)
+      clcov$phe <- rbinom(nrow(clcov), 1, 0.5)
+      lvde <- myde(cov.data = lvcov, cov.phecol="phe", expr.data=lvexp)
+      pmde <- myde(cov.data = pmcov, cov.phecol="phe", expr.data=pmexp)
+      hvde <- myde(cov.data = hvcov, cov.phecol="phe", expr.data=hvexp)
+      clde <- myde(cov.data = clcov, cov.phecol="phe", expr.data=clexp)
+      lvn1 <- nrow(lvde[adj.P.Val<0.05])
+      lvn2 <- nrow(lvde[P.Value<0.05])
+      pmn1 <- nrow(pmde[adj.P.Val<0.05])
+      pmn2 <- nrow(pmde[P.Value<0.05])
+      hvn1 <- nrow(hvde[adj.P.Val<0.05])
+      hvn2 <- nrow(hvde[P.Value<0.05])
+      cln1 <- nrow(clde[adj.P.Val<0.05])
+      cln2 <- nrow(clde[P.Value<0.05])
+      ad1 <- data.table("lv", perm=counter, ndeg=lvn1, nnom=lvn2)
+      ad2 <- data.table("pm", perm=counter, ndeg=pmn1, nnom=pmn2)
+      ad3 <- data.table("hv", perm=counter, ndeg=hvn1, nnom=hvn2)
+      ad4 <- data.table("cl", perm=counter, ndeg=cln1, nnom=cln2)
+      gutcheck <- rbind(gutcheck, ad1, ad2, ad3, ad4)
+      counter <- counter+1
+  }
+  gutcheck[,mean(nnom),V1]
+  ##  V1      V1
+  ##1: lv 1031.54
+  ##2: pm 1025.57
+
+#+END_SRC
+
+
+* code for learning more about what LBP DEGs are (ie, gene size, chr, etc)
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# gene metadata
+  map <- fread("~/ensemble_genes_and_transcripts", na=c("", "NA"))
+  gin <- unique(map[,.(gene=Ensembl_Gene_ID, chr=Chromosome_Name, size=`Gene_End_(bp)`-`Gene_Start_(bp)`)])
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# lbp degs
+  lbpup <- mydata$datasets$lel$de[adj.P.Val<0.05 & logFC>0]$gene
+  lbpdw <- mydata$datasets$lel$de[adj.P.Val<0.05 & logFC<0]$gene
+  lbpdu <- c(lbpup, lbpdw)
+  lbpstat <- mydata$datasets$lel$de[,.(gene,adj.P.Val,logFC)]
+  lbpstat[adj.P.Val>0.05,degStatus:="notDEG"]
+  lbpstat[adj.P.Val<0.05 & logFC>0,degStatus:="upInPM"]
+  lbpstat[adj.P.Val<0.05 & logFC<0,degStatus:="upInLV"]
+  lbpstat <- merge(lbpstat, gin, all.x=T)
+
+# chr and size stats for lbp degs
+  x1 <- lbpstat[!is.na(chr),.N,chr][grep("PATCH", invert=T,chr)]
+  x2 <- lbpstat[!is.na(chr) & degStatus=="notDEG",list(notDEG=.N),chr][grep("PATCH", invert=T,chr)]
+  x3 <- lbpstat[!is.na(chr) & degStatus=="upInPM",list(upInPM=.N),chr][grep("PATCH", invert=T,chr)]
+  x4 <- lbpstat[!is.na(chr) & degStatus=="upInLV",list(upInLV=.N),chr][grep("PATCH", invert=T,chr)]
+  x5 <- merge(merge(merge(x1, x2), x3), x4)
+  x5[,notDEG:=notDEG/N]
+  x5[,upInPM:=upInPM/N]
+  x5[,upInLV:=upInLV/N]
+  x5[order(chr)][order(notDEG)]
+
+# define sets to compare to one another
+  mysets <- c("ros", "may", "amp|10|PATH.Dx_simplified", "amp|36|PATH.Dx_simplified", "cmc|pfc|scz", "hbc|pfc|scz")
+
+# gene-level sumstats
+  gss <- list()
+  pdf("~/www/figures/lbp/gene_level_stats_by_lbp_status.pdf")
+  for(set in mysets){
+      print (set)
+      ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+      ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+      ex.data <- mydata[["voomObjects"]][[ex.name]][,ds.keep]
+      cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+      cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+      ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+      if (length(cv.name)==1){
+          cv.data <- mydata[["covariates"]][[cv.name]]
+      } else {
+          cv.data <- mydata[["covariates"]][[cv.name[1]]][[cv.name[2]]]
+      }
+      if ( "data.table" %in% class(cv.data) ){
+          cv.rnam <- cv.data[[ds.icol]]
+          cv.data <- as.data.frame(cv.data)
+          rownames(cv.data) <- cv.rnam
+      }
+      cv.data <- cv.data[ds.keep,]
+      if (set=="ros"){
+          cases <- rownames(cv.data[cv.data$ceradscBin==1,])
+          ctrls <- rownames(cv.data[cv.data$ceradscBin==0,])
+      }
+      if (set=="may"){
+          cases <- rownames(cv.data[cv.data$cascon.strict==1,])
+          ctrls <- rownames(cv.data[cv.data$cascon.strict==0,])
+      }
+      if (set %in% c("amp|10|PATH.Dx_simplified","amp|36|PATH.Dx_simplified")){
+          cases <- rownames(cv.data[cv.data$PATH.Dx_simplified=="AD",])
+          ctrls <- rownames(cv.data[cv.data$PATH.Dx_simplified=="NL",])
+      }
+      if (set %in% c("cmc|pfc|scz", "hbc|pfc|scz")){
+          cases <- rownames(cv.data[cv.data$Dx=="SCZ",])
+          ctrls <- rownames(cv.data[cv.data$Dx=="Control",])
+      }
+      avg.all <- apply(ex.data, 1, mean)
+      avg.cas <- apply(ex.data[,cases], 1, mean)
+      avg.con <- apply(ex.data[,ctrls], 1, mean)
+      med.all <- apply(ex.data, 1, median)
+      med.cas <- apply(ex.data[,cases], 1, median)
+      med.con <- apply(ex.data[,ctrls], 1, median)
+      sdv.all <- apply(ex.data, 1, sd)
+      sdv.cas <- apply(ex.data[,cases], 1, sd)
+      sdv.con <- apply(ex.data[,ctrls], 1, sd)
+      avg <- merge( merge( as.data.table(avg.all, keep.rownames=T), as.data.table(avg.cas, keep.rownames=T) ), as.data.table(avg.con, keep.rownames=T) )
+      med <- merge( merge( as.data.table(med.all, keep.rownames=T), as.data.table(med.cas, keep.rownames=T) ), as.data.table(med.con, keep.rownames=T) )
+      sdv <- merge( merge( as.data.table(sdv.all, keep.rownames=T), as.data.table(sdv.cas, keep.rownames=T) ), as.data.table(sdv.con, keep.rownames=T) )
+      mer <- merge(merge(merge(avg, med), sdv), var)
+      mer[, lbpStatus:="notdeg"]
+      mer[rn %in% lbpup, lbpStatus:="upInDed"]
+      mer[rn %in% lbpdw, lbpStatus:="upInLiv"]
+      mer[rn %in% lbpup, upInDed:=1]
+      mer[rn %in% lbpdw, upInLiv:=1]
+      mer[!rn %in% lbpdu, upInDed:=0]
+      mer[!rn %in% lbpdu, upInLiv:=0]
+      ##mer <- merge(mer, gin, all.x=T)
+      gss[[set]] <- mer
+      ##i <- "sdv" 
+      for (i in c("avg", "med", "sdv")){
+      ##for (j in c("all", "cas", "con")){
+          j <- "con" 
+          cname <- paste(i,j,sep='.')
+          ggt <- paste(set, cname)
+          p <- ggplot(mer, aes(lbpStatus, get(cname))) + geom_violin(trim=F) + geom_boxplot(width=0.1, fill="white") + 
+              theme_base() + ylab(cname) + ggtitle(ggt)
+          show(p)
+      }
+  }
+  ##}
+  dev.off()
+
+# what do sdv distributions look like in lbp itself?
+  set <- "lel"
+  ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+  ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+  ex.data <- mydata[["voomObjects"]][[ex.name]][,ds.keep]
+  cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+  cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+  ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+  cv.data <- mydata[["covariates"]][[cv.name]]
+  cv.data <- cv.data[ds.keep,]
+  cases <- rownames(cv.data[cv.data$mymet_postmortem=="postmortem",])
+  ctrls <- rownames(cv.data[cv.data$mymet_postmortem=="living",])
+  sdv.cas <- apply(ex.data[,cases], 1, sd)
+  sdv.con <- apply(ex.data[,ctrls], 1, sd)
+  mer <- merge( as.data.table(sdv.cas, keep.rownames=T) , as.data.table(sdv.con, keep.rownames=T) ) 
+  mer[,rn:=tstrsplit(rn, split=".", fixed=T, keep=1L)]
+  mer[, lbpStatus:="notdeg"]
+  mer[rn %in% lbpup, lbpStatus:="upInDed"]
+  mer[rn %in% lbpdw, lbpStatus:="upInLiv"]
+  mer[rn %in% lbpup, upInDed:=1]
+  mer[rn %in% lbpdw, upInLiv:=1]
+  mer[!rn %in% lbpdu, upInDed:=0]
+  mer[!rn %in% lbpdu, upInLiv:=0]
+  me2 <- rbind(mer[,.(rn, sdv=sdv.cas, group="pm", degStatus=lbpStatus)], mer[,.(rn, sdv=sdv.con, group="lv", degStatus=lbpStatus)])
+  p <- ggplot(me2, aes(degStatus, sdv, fill=group)) + geom_boxplot() + theme_base()
+
+
+
+#+END_SRC
+
+
+* code for simple fishers test of DE signature overkap across datasets 
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  suppressMessages(library(hutils))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# datasets 
+  mysets <- c("ros", "amp|10|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("ALZ_ROSMAP", "ALZ_MSB10", "SCZ_CMCPFC", "SCZ_HBCC")
+
+# lbp de
+  lbp <- mydata$datasets$lel$de
+  lbpde <- lbp[adj.P.Val<0.05]$gene
+
+# iterate
+  out <- c()
+  for (h in 1:length(mysets)){
+      print(h)
+      i <- mysets[h]
+      j <- myname[h]
+      d <- mydata$datasets[[i]]$de$noNEUcorr.noLBPcorr
+      d <- d[gene %in% lbp$gene]
+      d <- mutate_ntile(d, P.Value, n = 10)
+      d[,lbp:="notdeg"]
+      d[gene %in% lbpde,lbp:="deg"]
+      for (k in 9:1){
+          newd <- copy(d)
+          newd[,disease:="notdeg"]
+          newd[P.ValueDecile<=k,disease:="deg"]
+          tres <- fisher.test(table(newd$lbp, newd$disease), alternative="greater")
+          add <- data.table(set=i, name=j, decile=k, or=tres$estimate, p=tres$p.value)
+          out<- rbind(out, add) 
+      }
+  }
+
+
+#+END_SRC
+
+
+* number of DEGs after LBP correction in scz and alz
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# datasets 
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "cmc|acc|scz", "hbc|pfc|scz")
+  myname <- c("ALZ_ROSMAP", "ALZ_MAYO", "ALZ_MSB10", "ALZ_MSB36", "SCZ_CMCPFC", "SCZ_CMCACC", "SCZ_HBCC")
+
+# ndegs
+  ndegs <- c()
+  for (i in 1:length(mysets)){
+      s <- mysets[i]
+      n <- myname[i]
+      de0 <- mydata$datasets[[s]]$de$noNEUcorr.noLBPcorr
+      de1 <- mydata$datasets[[s]]$de$noLBPcorr
+      de2 <- mydata$datasets[[s]]$de$yesLBPcorr
+      up0 <- de0[logFC>0 & adj.P.Val<0.05]$gene
+      dw0 <- de0[logFC<0 & adj.P.Val<0.05]$gene
+      up1 <- de1[logFC>0 & adj.P.Val<0.05]$gene
+      dw1 <- de1[logFC<0 & adj.P.Val<0.05]$gene
+      up2 <- de2[logFC>0 & adj.P.Val<0.05]$gene
+      dw2 <- de2[logFC<0 & adj.P.Val<0.05]$gene
+      u2u <- intersect(up1, up2)
+      d2d <- intersect(dw1, dw2)
+      u2d <- intersect(up1, dw2)
+      d2u <- intersect(dw1, up2)
+      add <- data.table( dataset=n, nde0=nrow(de0[adj.P.Val<0.05]), nde1 = nrow(de1[adj.P.Val<0.05]), nde2 = nrow(de2[adj.P.Val<0.05]),
+                        nup1 = length(up1), ndw1 = length(dw1), 
+                        nup2 = length(up2), ndw2 = length(dw2), 
+                        nu2u = length(u2u), nd2d = length(d2d), 
+                        nu2d = length(u2d), nd2u = length(d2u))
+      ndegs <- rbind(ndegs, add)
+  }
+
+#+END_SRC
+
+
+* investigating effect of LBP correction at gene level across scz and alz
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# datasets
+  mydelt <- mydata$datasets$lel$de[,.(gene, logFClbp=logFC, padjlbp=adj.P.Val)]
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("ALZ_ROSMAP", "ALZ_MAYO", "ALZ_MSB10", "ALZ_MSB36", "SCZ_CMCPFC", "SCZ_HBCC")
+
+# how correctin changes genes across datasets
+  pdf("~/www/figures/lbp/genic_changes_with_lbp_correction", width=12, height=8)
+  for (i in 1:length(mysets)){
+      s <- mysets[i]
+      n <- myname[i]
+      de1 <- mydata$datasets[[s]]$de$noLBPcorr
+      de2 <- mydata$datasets[[s]]$de$yesLBPcorr
+      dem <- merge(de1, de2, by='gene', suffixes=c(".nolbpCorr", ".lbpCorr"))
+      del <- dem[,.(gene, padjorig=adj.P.Val.nolbpCorr, padjnew=adj.P.Val.lbpCorr, 
+                    logFCorig=logFC.nolbpCorr, logFCnew=logFC.lbpCorr,
+                    logFCdelta=logFC.lbpCorr-logFC.nolbpCorr)]
+      del[, orig.rank := frank(padjorig)]
+      del[, new.rank := frank(padjnew)]
+      del[,delta.rank:=new.rank-orig.rank]
+      del[,deStatusOrig:="origNotDeg"]
+      del[padjorig<0.05,deStatusOrig:="origDeg"]
+      x <- cor.test(del$orig.rank, del$new.rank)
+      cat(n, x$estimate, x$p.value, '\n')
+      x2 <- cor.test(del$logFCorig, del$logFCnew, method='spearman')
+      cat(n, x2$estimate, x2$p.value, '\n')
+      p <- ggplot(del, aes(orig.rank, new.rank, fill=delta.rank)) + geom_point(pch=21, size=5) + theme_base() + 
+          scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+          ggtitle(n) + facet_wrap(~deStatusOrig, scales="free")
+      show(p)
+      p <- ggplot(del, aes(orig.rank, new.rank, fill=delta.rank)) + geom_point(pch=21, size=5) + theme_base() + 
+          scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+          ggtitle(n) + facet_wrap(~deStatusOrig, scales="free")
+      #p <- ggplot(del, aes(-log10(padjorig), logFCdelta)) + geom_point() + theme_base() + ggtitle(n) ##+ xlim(0,0.1)
+      #show(p)
+      #cur <- merge(del, mydelt)
+      #p <- ggplot(cur, aes(logFClbp, logFCdelta)) + geom_point() + theme_base() + ggtitle(n) ##+ xlim(0,0.1)
+      #show(p)
+      #p <- ggplot(cur, aes(logFCorig, logFCdelta)) + geom_point() + theme_base() + ggtitle(n) ##+ xlim(0,0.1)
+      #show(p)
+      #colnames(del) <- c("gene", paste0(n,".logFCorig"), paste0(n,".logFCdelta"))
+      #mydelt <- merge(mydelt, del, by="gene")
+  }
+  dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## look at how genes change with correction based on whether in dtangle model 
+##
+## current interpreation: for a given gene correcting for the lbp signature has a similar effect on the logFC regardless of the dataset;
+##                        is this to be expected? unclear
+##
+
+  myregression <- function(dt, x, y){
+      fit.form <- as.formula(paste( y, " ~ ", x ))
+      fit <- lm(fit.form, data=dt)
+      R2.Adj <- signif(summary(fit)$adj.r.squared, 5)
+      intercept <- signif(fit$coef[[1]],5 )
+      slope <- signif(fit$coef[[2]], 5)
+      pval <- signif(summary(fit)$coef[2,4], 5)
+      data.table(slope,intercept,R2.Adj, pval)
+  }
+  pdf("/sc/arion/projects/psychgen/lbp/results/de_with_without_pctlbp_genic_changes_by_lbp_status.pdf", width=12, height=8)
+  for (thresh in my.thresh){
+      tmp1 = merge(pctlbp.de[["hbc|pfc|scz"]][["de.withcorr"]][[paste("pt", thresh, sep="")]],
+                   pctlbp.de[["hbc|pfc|scz"]][["de.nocorr"]],
+                   by="gene", suffixes=c(".withcorr", ".nocorr"))
+      tmp2 = merge(pctlbp.de[["cmc|pfc|scz"]][["de.withcorr"]][[paste("pt", thresh, sep="")]],
+                   pctlbp.de[["cmc|pfc|scz"]][["de.nocorr"]],
+                   by="gene", suffixes=c(".withcorr", ".nocorr"))
+      tmp3 = merge(pctlbp.de[["cmc|acc|scz"]][["de.withcorr"]][[paste("pt", thresh, sep="")]],
+                   pctlbp.de[["cmc|acc|scz"]][["de.nocorr"]],
+                   by="gene", suffixes=c(".withcorr", ".nocorr"))
+      tmp4 = merge(pctlbp.de[["amp|10|PlaqueMean"]][["de.withcorr"]][[paste("pt", thresh, sep="")]],
+                   pctlbp.de[["amp|10|PlaqueMean"]][["de.nocorr"]],
+                   by="gene", suffixes=c(".withcorr", ".nocorr"))
+      tmp5 = merge(pctlbp.de[["amp|36|PlaqueMean"]][["de.withcorr"]][[paste("pt", thresh, sep="")]],
+                   pctlbp.de[["amp|36|PlaqueMean"]][["de.nocorr"]],
+                   by="gene", suffixes=c(".withcorr", ".nocorr"))
+      tmp1[,logFC.delta:=logFC.nocorr-logFC.withcorr]
+      tmp2[,logFC.delta:=logFC.nocorr-logFC.withcorr]
+      tmp3[,logFC.delta:=logFC.nocorr-logFC.withcorr]
+      tmp4[,logFC.delta:=logFC.nocorr-logFC.withcorr]
+      tmp5[,logFC.delta:=logFC.nocorr-logFC.withcorr]
+      tmp1[,data:="hbc"]
+      tmp2[,data:="cmp"]
+      tmp3[,data:="cma"]
+      tmp4[,data:="a10"]
+      tmp5[,data:="a36"]
+      rbd = rbind(tmp1, tmp2, tmp3, tmp4, tmp5)
+      lbpsig = data.table( gene=unlist(my.dacList[[paste("pt", thresh, sep="")]]) )
+      lbpsig[gene %in% my.dacList[[paste("pt", thresh, sep="")]]$living, lbpSig:="living"]
+      lbpsig[gene %in% my.dacList[[paste("pt", thresh, sep="")]]$dead, lbpSig:="dead"]
+      rbd = merge(rbd, lbpsig, all.x=T)
+      rbd[is.na(lbpSig), lbpSig:="none"]
+      p = ggplot(rbd, aes(logFC.delta, fill=lbpSig)) + geom_density(alpha=0.4) + facet_wrap(~data, scales="free") + 
+          theme_base() + 
+          theme(axis.text.x=element_text(angle = -60, hjust = 0)) + ggtitle(paste("pt", thresh, sep=""))
+      show(p)
+      pairs <- t(combn(unique(rbd$data), 2))
+      mer <- c()
+      regressions_data <- c()
+      xvar <- "logFC.delta.ds1"
+      yvar <- "logFC.delta.ds2"
+      for (i in 1:nrow(pairs)){
+          ds1 <- pairs[i,1]
+          ds2 <- pairs[i,2]
+          tmp6 <- rbd[data==ds1,.(gene, lbpSig, logFC.delta)]
+          tmp7 <- rbd[data==ds2,.(gene, lbpSig, logFC.delta)]
+          tmp8 <- merge(tmp6, tmp7, by=c("gene","lbpSig"), suffixes=c(".ds1",".ds2"))
+          tmp8$ds1ds2 <- paste(ds1, ds2)
+          regressions_data <- rbind(regressions_data, data.table(ds1ds2=paste(ds1, ds2), myregression(tmp8,xvar,yvar)))
+          mer <- rbind(mer, tmp8)
+      }
+      p = ggplot(mer, aes(x=get(xvar), y=get(yvar))) + geom_point(pch=21,alpha=0.3,aes(fill=lbpSig), col="gray") + 
+          facet_wrap(~ds1ds2, scales="free") + 
+          stat_smooth(method = "lm", col = "red") +
+          theme_base() + 
+          theme(axis.text.x=element_text(angle = -60, hjust = 0)) + 
+          ggtitle(paste("pt", thresh, sep="")) + 
+          xlab(xvar) + ylab(yvar) +
+          geom_hline(yintercept=0, linetype="dashed", col="grey") +
+          geom_vline(xintercept=0, linetype="dashed", col="grey") +
+          geom_label(data=regressions_data, size=3, inherit.aes=FALSE, aes(0,0,label=paste("slope=",slope,"\n","R^2.Adj=",R2.Adj)))
+      show(p)      
+  }
+  dev.off()
+
+#+END_SRC
+
+
+* does LBP correction make scz/alz results "better"? number of eqtl DEGs pre/post correction
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# load eqtl list
+  eql <- fread("/sc/arion/projects/psychgen/resources/psychencode/Derived/QTLs/DER-08b_hg19_eQTL.bonferroni.txt")
+  eql[,gene:=tstrsplit(gene_id, split=".", fixed=T, keep=1L)]
+  egn <- unique(eql$gene)
+
+# datasets 
+  mysets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean", "cmc|pfc|scz", "hbc|pfc|scz")
+  myname <- c("ALZ_ROSMAP", "ALZ_MAYO", "ALZ_MSB10", "ALZ_MSB36", "SCZ_CMCPFC", "SCZ_HBCC")
+  check <- c()
+  for (i in 1:length(mysets)){
+      s <- mysets[i]
+      n <- myname[i]
+      de1 <- mydata$datasets[[s]]$de$noLBPcorr
+      de2 <- mydata$datasets[[s]]$de$yesLBPcorr
+      de3 <- mydata$datasets[[s]]$de$noNEUcorr.yesLBPcorr
+      colnames(de3) <- paste0(colnames(de3), ".lbpCorrNoNeuCorr")
+      colnames(de3)[1] <- "gene"
+      dem <- merge(de1, de2, by='gene', suffixes=c(".nolbpCorr", ".lbpCorr"))
+      dem <- merge(dem, de3, by='gene')
+      dem[,haseqtl:="no"]
+      dem[,isdegpre:="no"]
+      dem[,isdegpost:="no"]
+      dem[,isdegpostnoneu:="no"]
+      dem[gene %in% egn, haseqtl:="yes"]
+      dem[adj.P.Val.nolbpCorr<0.05, isdegpre:="yes"]
+      dem[adj.P.Val.lbpCorr<0.05, isdegpost:="yes"]
+      dem[adj.P.Val.lbpCorrNoNeuCorr<0.05, isdegpostnoneu:="yes"]
+      ft1 <- fisher.test(table(dem$haseqtl, dem$isdegpre))
+      ft2 <- fisher.test(table(dem$haseqtl, dem$isdegpost))
+      ft3 <- fisher.test(table(dem$haseqtl, dem$isdegpostnoneu))
+      ad1 <- data.table(dataset=n, test="preCorr", estimate=ft1$estimate, pval=ft1$p.value)
+      ad2 <- data.table(dataset=n, test="postCorr", estimate=ft2$estimate, pval=ft2$p.value)
+      ad3 <- data.table(dataset=n, test="postCorrNoNeu", estimate=ft3$estimate, pval=ft3$p.value)
+      check <- rbind(check, ad1, ad2, ad3)
+  }
+
+#+END_SRC
+
+
+* does LBP correction make scz/alz results "better"? DEG overlap with GWAS pre/post correction
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(corrplot))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# magma results
+  map <- fread("~/ensemble_genes_and_transcripts", na=c("", "NA"))
+  load("/sc/arion/projects/psychgen/methods/rx/data/molPsych2019_psychosisGenData.Rdata") #genlist
+  sczmag <- genlist$mag
+  alzmag <- fread("/sc/arion/projects/psychgen/lbp/results/magma/igap_magma_geneAnalysisStep.genes.out")
+  alzmag <- unique(merge(unique(map[,.(gene=Ensembl_Gene_ID,GENE=Associated_Gene_Name)]), alzmag)[,.(gene,magma.z=ZSTAT,magma.p=P)])
+  sczmag <- unique(merge(unique(map[,.(gene=Ensembl_Gene_ID,GENE=Associated_Gene_Name)]), sczmag)[,.(gene,magma.z=ZSTAT,magma.p=P)])
+  rm(genlist)
+  #alzmag <- alzmag[order(magma.p)]
+  #alzmag[,gwasRank:=.I]
+
+# datasets 
+  alzsets <- c("ros", "may", "amp|10|PlaqueMean", "amp|36|PlaqueMean")
+  sczsets <- c("cmc|pfc|scz", "hbc|pfc|scz")
+  names(alzsets) <- c("ALZ_ROSMAP", "ALZ_MAYO", "ALZ_MSB10", "ALZ_MSB36")
+  names(sczsets) <- c("SCZ_CMCPFC", "SCZ_HBCC")
+  for (i in 1:length(alzsets)){
+      s <- alzsets[i]
+      n <- names(alzsets)[i]
+      de1 <- mydata$datasets[[s]]$de$noLBPcorr
+      de2 <- mydata$datasets[[s]]$de$yesLBPcorr
+      de3 <- mydata$datasets[[s]]$de$noNEUcorr.yesLBPcorr
+      colnames(de3) <- paste0(colnames(de3), ".lbpCorrNoNeuCorr")
+      colnames(de3)[1] <- "gene"
+      dem <- merge(de1, de2, by='gene', suffixes=c(".nolbpCorr", ".lbpCorr"))
+      dem <- merge(dem, de3, by='gene')
+      add <- dem[,.(gene, logFC.nolbpCorr, P.Value.nolbpCorr, logFC.lbpCorr, P.Value.lbpCorr, logFC.lbpCorrNoNeuCorr, P.Value.lbpCorrNoNeuCorr)]
+      colnames(add) <- c("gene", paste0(n,".",colnames(add)[2:length(colnames(add))]))
+      alzmag <- merge(alzmag, add, by="gene") 
+  }
+  for (i in 1:length(sczsets)){
+      s <- sczsets[i]
+      n <- names(sczsets)[i]
+      de1 <- mydata$datasets[[s]]$de$noLBPcorr
+      de2 <- mydata$datasets[[s]]$de$yesLBPcorr
+      de3 <- mydata$datasets[[s]]$de$noNEUcorr.yesLBPcorr
+      colnames(de3) <- paste0(colnames(de3), ".lbpCorrNoNeuCorr")
+      colnames(de3)[1] <- "gene"
+      dem <- merge(de1, de2, by='gene', suffixes=c(".nolbpCorr", ".lbpCorr"))
+      dem <- merge(dem, de3, by='gene')
+      add <- dem[,.(gene, logFC.nolbpCorr, P.Value.nolbpCorr, logFC.lbpCorr, P.Value.lbpCorr, logFC.lbpCorrNoNeuCorr, P.Value.lbpCorrNoNeuCorr)]
+      colnames(add) <- c("gene", paste0(n,".",colnames(add)[2:length(colnames(add))]))
+      sczmag <- merge(sczmag, add, by="gene") 
+  }
+  alzmag[, magma.rank := frank(magma.p)]
+  sczmag[, magma.rank := frank(magma.p)]
+  for (i in grep("P.Value", value=T, colnames(alzmag))){alzmag[,try(paste0(i,".rank")) := frank(get(i))]}
+  for (i in grep("P.Value", value=T, colnames(sczmag))){sczmag[,try(paste0(i,".rank")) := frank(get(i))]}
+
+# dist of gwas gene ranks in new vs old de  
+  pdf("~/www/figures/lbp/tmp.pdf")
+  mythresh <- c(1, 0.5, 0.05, 0.005, 0.0005, 0.00005, 0.000005, 0.0000005)
+  for (i in 1:length(alzsets)){
+      n <- names(alzsets)[i]
+      ##r1 <- paste0(n,".P.Value.nolbpCorr.rank")
+      ##r2 <- paste0(n,".P.Value.lbpCorr.rank")
+      r1 <- paste0(n,".logFC.nolbpCorr")
+      r2 <- paste0(n,".logFC.lbpCorr")
+      r3 <- paste0(n,".logFC.lbpCorrNoNeuCorr")
+      for (j in mythresh){
+          pdat <- alzmag[magma.p<=j]
+          d1 <- data.table(gene=pdat$gene, rank=pdat[[r1]], ranksource=r1)
+          d2 <- data.table(gene=pdat$gene, rank=pdat[[r2]], ranksource=r2)
+          d3 <- data.table(gene=pdat$gene, rank=pdat[[r3]], ranksource=r3)
+          pdat <- rbind(d1, d2, d3)
+          ggt <- paste0(n, "|", j)
+          p <- ggplot(pdat, aes(rank, fill=ranksource)) + geom_density(alpha=0.3) + theme_base() + ggtitle(ggt)
+          show(p)
+      }
+  }
+  for (i in 1:length(sczsets)){
+      n <- names(sczsets)[i]
+      ##r1 <- paste0(n,".P.Value.nolbpCorr.rank")
+      ##r2 <- paste0(n,".P.Value.lbpCorr.rank")
+      r1 <- paste0(n,".logFC.nolbpCorr")
+      r2 <- paste0(n,".logFC.lbpCorr")
+      r3 <- paste0(n,".logFC.lbpCorrNoNeuCorr")
+      for (j in mythresh){
+          pdat <- sczmag[magma.p<=j]
+          d1 <- data.table(gene=pdat$gene, rank=pdat[[r1]], ranksource=r1)
+          d2 <- data.table(gene=pdat$gene, rank=pdat[[r2]], ranksource=r2)
+          d3 <- data.table(gene=pdat$gene, rank=pdat[[r3]], ranksource=r3)
+          pdat <- rbind(d1, d2, d3)
+          ggt <- paste0(n, "|", j)
+          p <- ggplot(pdat, aes(rank, fill=ranksource)) + geom_density(alpha=0.3) + theme_base() + ggtitle(ggt)
+          show(p)
+      }
+  }
+  dev.off()
+
+#+END_SRC
+
+
+* does LBP correction make scz/alz results "better"? DEG overlap across datasets pre/post correction
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# load mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+
+# define sets to compare to one another
+  mysets <- c("lel", "amp|10|NP.1", "amp|36|NP.1", "cmc|pfc|scz", "cmc|acc|scz", "hbc|pfc|scz")
+
+# make helper
+  helper <- list()
+  for(set in mysets){
+      print (set)
+      ex.name <- mydata[["datasets"]][[set]][["expression_matrices"]]
+      ex.type <- mydata[["datasets"]][[set]][["expression_matrices.type"]]
+      cv.name <- mydata[["datasets"]][[set]][["covariates"]]
+      cv.covs <- mydata[["datasets"]][[set]][["cov.list"]]
+      cv.phen <- mydata[["datasets"]][[set]][["phe.col"]]
+      ds.keep <- mydata[["datasets"]][[set]][["id.list"]]
+      ds.icol <- mydata[["datasets"]][[set]][["id.col"]]
+      ex.data <- mydata[["expression_matrices"]][[ex.name]]
+      de.form <- mydata[["datasets"]][[set]][["de.formula"]]
+      needcon <- mydata[["datasets"]][[set]][["needsContrast"]]
+      if (needcon) {
+          coninfo <- mydata[["datasets"]][[set]][["contrasts"]]
+      } else {
+          coninfo <- NA
+      }
+      if (length(cv.name)==1){
+          cv.data <- mydata[["covariates"]][[cv.name]]
+      } else {
+          cv.data <- mydata[["covariates"]][[cv.name[1]]][[cv.name[2]]]
+      }
+      if (ex.type == "voom"){
+          ex.data <- ex.data$E
+      }
+      ex.data <- ex.data[,ds.keep]
+      if ( "data.table" %in% class(cv.data) ){
+          cv.rnam <- cv.data[[ds.icol]]
+          cv.data <- as.data.frame(cv.data[, c(cv.phen, cv.covs), with=F])
+          rownames(cv.data) <- cv.rnam
+      } else {
+          cv.data <- cv.data[, c(cv.phen, cv.covs)]
+      }
+      cv.data <- cv.data[ds.keep,]
+      if (! identical(rownames(cv.data),colnames(ex.data))) {
+          stop("covariate and expression cols are not equal")
+      } else {
+          if(set=="lel") {
+              helper[[set]][["exp"]] <- ex.data
+              helper[[set]][["cnn"]] <- needcon
+              helper[[set]][["cni"]] <- coninfo
+              helper[[set]][["phe"]] <- cv.phen        
+              helper[[set]][["cov"]] <- cv.data
+              helper[[set]][["frm"]] <- de.form
+          } else {
+              helper[[set]][["exp"]] <- ex.data
+              helper[[set]][["cnn"]] <- needcon
+              helper[[set]][["cni"]] <- coninfo
+              helper[[set]][["phe"]] <- cv.phen
+              helper[[set]][["cov"]] <- list()
+              helper[[set]][["frm"]] <- list()
+
+              ## add neuronal fraction to formula/covariates
+              ndat <- as.data.frame(mydata[["decon"]][[ex.name]][,.(rn, neuronal=GLU+GABA)])
+              rownames(ndat) <- ndat$rn
+              ndat$rn <- NULL
+              ndat <- ndat[rownames(cv.data), , drop=F]
+              if (! identical(rownames(ndat),rownames(cv.data))) {
+                  stop("neuronal and covariate rows are not equal")
+              } else {
+                  cv.data$neuronal <- ndat$neuronal
+                  de.frm2 <- as.formula(paste0("~", as.character(de.form)[2], " + neuronal"))
+                  helper[[set]][["cov"]][["withoutPctlbp"]] <- cv.data
+                  helper[[set]][["frm"]][["withoutPctlbp"]] <- de.frm2
+              }
+
+              ## add pctlbp to formula/covariates
+              ldat <- as.data.frame(mydata[["pctlbp.lel"]][[ex.name]][["pt1"]][,.(rn=SampleID, dead)])
+              rownames(ldat) <- ldat$rn
+              ldat$rn <- NULL
+              ldat <- ldat[rownames(cv.data), , drop=F]
+              if (! identical(rownames(ldat),rownames(cv.data))) {
+                  stop("pctlbp and covariate rows are not equal")
+              } else {
+                  cv.data$pctlbp <- ldat$dead
+                  de.frm3 <- as.formula(paste0("~", as.character(de.frm2)[2], " + pctlbp"))
+                  helper[[set]][["cov"]][["withPctlbp"]] <- cv.data
+                  helper[[set]][["frm"]][["withPctlbp"]] <- de.frm3
+            }
+        }
+    }
+  }
+
+# sketch out the comparisons we are going to make right now
+  comparisons <- as.data.table(t(combn(mysets, 2)))[,.(set1=V1, set2=V2)]
+  thresholds <- c(1, 0.5, 0.05, 0.005, 0.0005, 0.00005)
+
+# compare de corr at different pval thresholds looks like across datasets
+  ###results <- c()
+  pdf("~/www/figures/lbp/deCorr.pdf")
+  for (i in 1:nrow(comparisons)){
+
+      ## setup comparison
+      s1 <- comparisons[i]$set1
+      s2 <- comparisons[i]$set2
+
+      ## run de for set1 if its lel
+      if (s1 == "lel"){
+          exp1 <- helper[[s1]][["exp"]]
+          cov1 <- helper[[s1]][["cov"]]
+          frm1 <- helper[[s1]][["frm"]]
+          cnn1 <- helper[[s1]][["cnn"]]
+          cni1 <- helper[[s1]][["cni"]]
+          phe1 <- helper[[s1]][["phe"]]
+          set1 <- helper[[s1]][["set"]]
+          design1 <- model.matrix(frm1, cov1)
+          colnames(design1) <- make.names(colnames(design1))
+          lmgroup1 <- lmFit(exp1, design1)
+          lmgroup_DE1 <- eBayes(lmgroup1)
+          coefcol1 <- which(gregexpr(phe1, colnames(design1))>0)
+          Group_DE_tab1 <- topTable(lmgroup_DE1, coef=coefcol1, number=nrow(lmgroup_DE1))
+          de1 <- data.table( gene = rownames(Group_DE_tab1), Group_DE_tab1)
+          de1[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+          de1.slim <- de1[,.(gene, logFC.ds1=logFC, P.Value.ds1=P.Value)]
+      }
+
+      ## run de for set1 if its not lel
+      if (s1 != "lel"){
+          exp1 <- helper[[s1]][["exp"]]
+          cnn1 <- helper[[s1]][["cnn"]]
+          cni1 <- helper[[s1]][["cni"]]
+          phe1 <- helper[[s1]][["phe"]]
+          set1 <- helper[[s1]][["set"]]
+          cv1a <- helper[[s1]][["cov"]][["withoutPctlbp"]]
+          cv1b <- helper[[s1]][["cov"]][["withPctlbp"]]
+          fm1a <- helper[[s1]][["frm"]][["withoutPctlbp"]]
+          fm1b <- helper[[s1]][["frm"]][["withPctlbp"]]
+          design1a <- model.matrix(fm1a, cv1a)
+          design1b <- model.matrix(fm1b, cv1b)
+          colnames(design1a) <- make.names(colnames(design1a))
+          colnames(design1b) <- make.names(colnames(design1b))
+          lmgroup1a <- lmFit(exp1, design1a)
+          lmgroup1b <- lmFit(exp1, design1b)
+          if (cnn1){
+              contrasts1a <- makeContrasts(cni1, levels=design1a)
+              contrasts1b <- makeContrasts(cni1, levels=design1b)
+              eBfit1a <- eBayes(lmgroup1a)
+              eBfit1b <- eBayes(lmgroup1b)
+              lmgroup_DE1a <- contrasts.fit(eBfit1a, contrasts1a)
+              lmgroup_DE1b <- contrasts.fit(eBfit1b, contrasts1b)
+              lmgroup_DE1a <- eBayes(lmgroup_DE1a)
+              lmgroup_DE1b <- eBayes(lmgroup_DE1b)
+              coefcol1a <- 1
+              coefcol1b <- 1
+          } else {
+              lmgroup_DE1a <- eBayes(lmgroup1a)
+              lmgroup_DE1b <- eBayes(lmgroup1b)
+              coefcol1a <- which(gregexpr(phe1, colnames(design1a))>0)
+              coefcol1b <- which(gregexpr(phe1, colnames(design1b))>0)
+          }
+          Group_DE_tab1a <- topTable(lmgroup_DE1a, coef=coefcol1a, number=nrow(lmgroup_DE1a))
+          Group_DE_tab1b <- topTable(lmgroup_DE1b, coef=coefcol1b, number=nrow(lmgroup_DE1b))
+          de1a <- data.table( gene = rownames(Group_DE_tab1a), Group_DE_tab1a)
+          de1b <- data.table( gene = rownames(Group_DE_tab1b), Group_DE_tab1b)
+          de1a[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+          de1b[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+          de1a.slim <- de1a[,.(gene, logFC.ds1=logFC, P.Value.ds1=P.Value)]
+          de1b.slim <- de1b[,.(gene, logFC.ds1.lbpCorr=logFC, P.Value.ds1.lbpCorr=P.Value)]
+          de1.slim <- merge(de1a.slim, de1b.slim, by="gene")
+      }
+
+      ## run de for set2
+      exp2 <- helper[[s2]][["exp"]]
+      cnn2 <- helper[[s2]][["cnn"]]
+      cni2 <- helper[[s2]][["cni"]]
+      phe2 <- helper[[s2]][["phe"]]
+      set2 <- helper[[s2]][["set"]]
+      cv2a <- helper[[s2]][["cov"]][["withoutPctlbp"]]
+      cv2b <- helper[[s2]][["cov"]][["withPctlbp"]]
+      fm2a <- helper[[s2]][["frm"]][["withoutPctlbp"]]
+      fm2b <- helper[[s2]][["frm"]][["withPctlbp"]]
+      design2a <- model.matrix(fm2a, cv2a)
+      design2b <- model.matrix(fm2b, cv2b)
+      colnames(design2a) <- make.names(colnames(design2a))
+      colnames(design2b) <- make.names(colnames(design2b))
+      lmgroup2a <- lmFit(exp2, design2a)
+      lmgroup2b <- lmFit(exp2, design2b)
+      if (cnn2){
+          contrasts2a <- makeContrasts(cni2, levels=design2a)
+          contrasts2b <- makeContrasts(cni2, levels=design2b)
+          eBfit2a <- eBayes(lmgroup2a)
+          eBfit2b <- eBayes(lmgroup2b)
+          lmgroup_DE2a <- contrasts.fit(eBfit2a, contrasts2a)
+          lmgroup_DE2b <- contrasts.fit(eBfit2b, contrasts2b)
+          lmgroup_DE2a <- eBayes(lmgroup_DE2a)
+          lmgroup_DE2b <- eBayes(lmgroup_DE2b)
+          coefcol2a <- 1
+          coefcol2b <- 1
+      } else {
+          lmgroup_DE2a <- eBayes(lmgroup2a)
+          lmgroup_DE2b <- eBayes(lmgroup2b)
+          coefcol2a <- which(gregexpr(phe2, colnames(design2a))>0)
+          coefcol2b <- which(gregexpr(phe2, colnames(design2b))>0)
+      }
+      Group_DE_tab2a <- topTable(lmgroup_DE2a, coef=coefcol2a, number=nrow(lmgroup_DE2a))
+      Group_DE_tab2b <- topTable(lmgroup_DE2b, coef=coefcol2b, number=nrow(lmgroup_DE2b))
+      de2a <- data.table( gene = rownames(Group_DE_tab2a), Group_DE_tab2a)
+      de2b <- data.table( gene = rownames(Group_DE_tab2b), Group_DE_tab2b)
+      de2a[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de2b[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de2a.slim <- de2a[,.(gene, logFC.ds2=logFC, P.Value.ds2=P.Value)]
+      de2b.slim <- de2b[,.(gene, logFC.ds2.lbpCorr=logFC, P.Value.ds2.lbpCorr=P.Value)]
+      de2.slim <- merge(de2a.slim, de2b.slim, by="gene")
+
+  
+      ## merge de results
+      mer <- merge(de1.slim, de2.slim, by="gene")
+      mer$ds1 <- s1
+      mer$ds2 <- s2
+
+      ## plots
+      if (s1 == "lel"){
+          p0x <- paste("logFC for ",  s2, " without LBP correction", sep="")
+          p0y <- paste("-log10(p) for ", s2, " without LBP correction", sep="")
+          p0l <- paste("logFC for ", s1, sep="")
+          p0 <- ggplot(mer, aes(logFC.ds2, -log10(P.Value.ds2) )) + 
+              geom_point(pch=21, size=5, aes(fill=logFC.ds1)) + theme_base() +
+              scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+              ylab(p0y) + xlab(p0x) + labs(fill=p0l) + theme(legend.title = element_text(size = 8))
+          p1x <- paste("logFC for ",  s2, " with LBP correction", sep="")
+          p1y <- paste("-log10(p) for ", s2, " with LBP correction", sep="")
+          p1l <- paste("logFC for ", s1, sep="")
+          p1 <- ggplot(mer, aes(logFC.ds2.lbpCorr, -log10(P.Value.ds2.lbpCorr) )) + 
+              geom_point(pch=21, size=5, aes(fill=logFC.ds1)) + theme_base() +
+              scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+              ylab(p1y) + xlab(p1x) + labs(fill=p1l) + theme(legend.title = element_text(size = 8))
+          show(p0)
+          show(p1)
+      } else {
+          p0x <- paste("logFC for ",  s1, " without LBP correction", sep="")
+          p0y <- paste("-log10(p) for ", s1, " without LBP correction", sep="")
+          p0l <- paste("logFC for ", s2, " without LBP correction", sep="")
+          p0 <- ggplot(mer, aes(logFC.ds1, -log10(P.Value.ds1) )) + 
+              geom_point(pch=21, size=5, aes(fill=logFC.ds2)) + theme_base() +
+              scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+              ylab(p0y) + xlab(p0x) + labs(fill=p0l) + theme(legend.title = element_text(size = 8))
+          p1x <- paste("logFC for ",  s1, " with LBP correction", sep="")
+          p1y <- paste("-log10(p) for ", s1, " with LBP correction", sep="")
+          p1l <- paste("logFC for ", s2, " with LBP correction", sep="")
+          p1 <- ggplot(mer, aes(logFC.ds1.lbpCorr, -log10(P.Value.ds1.lbpCorr) )) + 
+              geom_point(pch=21, size=5, aes(fill=logFC.ds2.lbpCorr)) + theme_base() +
+              scale_fill_gradient2(midpoint=0, low="blue", mid="white", high="red", space ="Lab" ) + 
+              ylab(p1y) + xlab(p1x) + labs(fill=p1l) + theme(legend.title = element_text(size = 8))
+          show(p0)
+          show(p1)
+      }
+  }
+  dev.off()
+  saveRDS(results, file="/sc/arion/projects/psychgen/lbp/results/decorr_diffPt_withWithoutPctlbp.RDS")
+
+# compare de corr at different pval thresholds looks like across datasets (using different deg definition approach than above)
+  results2 <- c()
+  for (i in 1:nrow(comparisons)){
+
+      ## setup comparison
+      s1 <- comparisons[i]$set1
+      s2 <- comparisons[i]$set2
+
+      ## run de for set1 if its lel
+      if (s1 == "lel"){
+          exp1 <- helper[[s1]][["exp"]]
+          cov1 <- helper[[s1]][["cov"]]
+          frm1 <- helper[[s1]][["frm"]]
+          cnn1 <- helper[[s1]][["cnn"]]
+          cni1 <- helper[[s1]][["cni"]]
+          phe1 <- helper[[s1]][["phe"]]
+          set1 <- helper[[s1]][["set"]]
+          design1 <- model.matrix(frm1, cov1)
+          colnames(design1) <- make.names(colnames(design1))
+          lmgroup1 <- lmFit(exp1, design1)
+          lmgroup_DE1 <- eBayes(lmgroup1)
+          coefcol1 <- which(gregexpr(phe1, colnames(design1))>0)
+          Group_DE_tab1 <- topTable(lmgroup_DE1, coef=coefcol1, number=nrow(lmgroup_DE1))
+          de1 <- data.table( gene = rownames(Group_DE_tab1), Group_DE_tab1)
+          de1[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+          de1.slim <- de1[,.(gene, logFC.ds1.lel=logFC, P.Value.ds1.lel=P.Value)]
+      }
+
+      ## run de for set1 if its not lel
+      if (s1 != "lel"){
+          exp1 <- helper[[s1]][["exp"]]
+          cnn1 <- helper[[s1]][["cnn"]]
+          cni1 <- helper[[s1]][["cni"]]
+          phe1 <- helper[[s1]][["phe"]]
+          set1 <- helper[[s1]][["set"]]
+          cv1a <- helper[[s1]][["cov"]][["withoutPctlbp"]]
+          cv1b <- helper[[s1]][["cov"]][["withPctlbp"]]
+          fm1a <- helper[[s1]][["frm"]][["withoutPctlbp"]]
+          fm1b <- helper[[s1]][["frm"]][["withPctlbp"]]
+          design1a <- model.matrix(fm1a, cv1a)
+          design1b <- model.matrix(fm1b, cv1b)
+          colnames(design1a) <- make.names(colnames(design1a))
+          colnames(design1b) <- make.names(colnames(design1b))
+          lmgroup1a <- lmFit(exp1, design1a)
+          lmgroup1b <- lmFit(exp1, design1b)
+          if (cnn1){
+              contrasts1a <- makeContrasts(cni1, levels=design1a)
+              contrasts1b <- makeContrasts(cni1, levels=design1b)
+              eBfit1a <- eBayes(lmgroup1a)
+              eBfit1b <- eBayes(lmgroup1b)
+              lmgroup_DE1a <- contrasts.fit(eBfit1a, contrasts1a)
+              lmgroup_DE1b <- contrasts.fit(eBfit1b, contrasts1b)
+              lmgroup_DE1a <- eBayes(lmgroup_DE1a)
+              lmgroup_DE1b <- eBayes(lmgroup_DE1b)
+              coefcol1a <- 1
+              coefcol1b <- 1
+          } else {
+              lmgroup_DE1a <- eBayes(lmgroup1a)
+              lmgroup_DE1b <- eBayes(lmgroup1b)
+              coefcol1a <- which(gregexpr(phe1, colnames(design1a))>0)
+              coefcol1b <- which(gregexpr(phe1, colnames(design1b))>0)
+          }
+          Group_DE_tab1a <- topTable(lmgroup_DE1a, coef=coefcol1a, number=nrow(lmgroup_DE1a))
+          Group_DE_tab1b <- topTable(lmgroup_DE1b, coef=coefcol1b, number=nrow(lmgroup_DE1b))
+          de1a <- data.table( gene = rownames(Group_DE_tab1a), Group_DE_tab1a)
+          de1b <- data.table( gene = rownames(Group_DE_tab1b), Group_DE_tab1b)
+          de1a[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+          de1b[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+          de1a.slim <- de1a[,.(gene, logFC.ds1.withoutPctlbp=logFC, P.Value.ds1.withoutPctlbp=P.Value)]
+          de1b.slim <- de1b[,.(gene, logFC.ds1.withPctlbp=logFC, P.Value.ds1.withPctlbp=P.Value)]
+          de1.slim <- merge(de1a.slim, de1b.slim, by="gene")
+      }
+
+      ## run de for set2
+      exp2 <- helper[[s2]][["exp"]]
+      cnn2 <- helper[[s2]][["cnn"]]
+      cni2 <- helper[[s2]][["cni"]]
+      phe2 <- helper[[s2]][["phe"]]
+      set2 <- helper[[s2]][["set"]]
+      cv2a <- helper[[s2]][["cov"]][["withoutPctlbp"]]
+      cv2b <- helper[[s2]][["cov"]][["withPctlbp"]]
+      fm2a <- helper[[s2]][["frm"]][["withoutPctlbp"]]
+      fm2b <- helper[[s2]][["frm"]][["withPctlbp"]]
+      design2a <- model.matrix(fm2a, cv2a)
+      design2b <- model.matrix(fm2b, cv2b)
+      colnames(design2a) <- make.names(colnames(design2a))
+      colnames(design2b) <- make.names(colnames(design2b))
+      lmgroup2a <- lmFit(exp2, design2a)
+      lmgroup2b <- lmFit(exp2, design2b)
+      if (cnn2){
+          contrasts2a <- makeContrasts(cni2, levels=design2a)
+          contrasts2b <- makeContrasts(cni2, levels=design2b)
+          eBfit2a <- eBayes(lmgroup2a)
+          eBfit2b <- eBayes(lmgroup2b)
+          lmgroup_DE2a <- contrasts.fit(eBfit2a, contrasts2a)
+          lmgroup_DE2b <- contrasts.fit(eBfit2b, contrasts2b)
+          lmgroup_DE2a <- eBayes(lmgroup_DE2a)
+          lmgroup_DE2b <- eBayes(lmgroup_DE2b)
+          coefcol2a <- 1
+          coefcol2b <- 1
+      } else {
+              lmgroup_DE2a <- eBayes(lmgroup2a)
+              lmgroup_DE2b <- eBayes(lmgroup2b)
+              coefcol2a <- which(gregexpr(phe2, colnames(design2a))>0)
+              coefcol2b <- which(gregexpr(phe2, colnames(design2b))>0)
+      }
+      Group_DE_tab2a <- topTable(lmgroup_DE2a, coef=coefcol2a, number=nrow(lmgroup_DE2a))
+      Group_DE_tab2b <- topTable(lmgroup_DE2b, coef=coefcol2b, number=nrow(lmgroup_DE2b))
+      de2a <- data.table( gene = rownames(Group_DE_tab2a), Group_DE_tab2a)
+      de2b <- data.table( gene = rownames(Group_DE_tab2b), Group_DE_tab2b)
+      de2a[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de2b[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de2a.slim <- de2a[,.(gene, logFC.ds2.withoutPctlbp=logFC, P.Value.ds2.withoutPctlbp=P.Value)]
+      de2b.slim <- de2b[,.(gene, logFC.ds2.withPctlbp=logFC, P.Value.ds2.withPctlbp=P.Value)]
+      de2.slim <- merge(de2a.slim, de2b.slim, by="gene")
+  
+      ## merge de results
+      mer <- merge& dataset1=="amp|10|NP.1"][order(lbpCorr)][pt.ds=="dataset1"]
+  results[dataset2=="cmc|pfc|sczNoAmp" & dataset1=="amp|10|NP.1"][order(lbpCorr)][pt.ds=="dataset1"]
+  results[dataset2=="cmc|pfc|scz" & dataset1=="amp|10|NP.1"][order(lbpCorr)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|pfc|sczNoAmp" & dataset1=="amp|10|NP.1"][order(lbpCorr)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|pfc|scz" & dataset1=="amp|36|NP.1"][order(lbpCorr)][pt.ds=="dataset1"]
+  results[dataset2=="cmc|pfc|sczNoAmp" & dataset1=="amp|36|NP.1"][order(lbpCorr)][pt.ds=="dataset1"]
+  results[dataset2=="cmc|pfc|scz" & dataset1=="amp|36|NP.1"][order(lbpCorr)][pt.ds=="dataset2"]
+  results[dataset2=="cmc|pfc|sczNoAmp" & dataset1=="amp|36|NP.1"][order(lbpCorr)][pt.ds=="dataset2"]
+
+}
+
+
+#+END_SRC
+
+
+* comparing LBP correction approaches using additional living/postmortem data
+
+#+BEGIN_SRC R
+
+# setup 
+  suppressMessages(library(dtangle))
+  suppressMessages(library(Biobase))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  source("/sc/arion/work/charna02/scripts/lbp/lbp_myfunctions.r")
+  myde <- function(cov.data, cov.phecol, expr.data) {
+      formula <- as.formula(paste("~",paste(colnames(cov.data),collapse="+")))
+      group_ascov_design <- model.matrix(formula, cov.data)
+      expr.data <- expr.data[,rownames(group_ascov_design)]
+      lmgroup <- lmFit(expr.data, group_ascov_design)
+      lmgroup_DE <- eBayes(lmgroup)
+      coefcol <- which(grepl(cov.phecol, colnames(group_ascov_design)))
+      Group_DE_tab <- topTable(lmgroup_DE, coef=coefcol, number=nrow(expr.data))
+      de <- data.table( gene = rownames(Group_DE_tab), Group_DE_tab)
+      de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+      de
+  }
+
+# replication data
+  red <- readRDS(file="/sc/arion/projects/psychgen2/lbp/scratch/awc_repdata.RDS")
+
+# lbp data
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  lbp <- readRDS("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/NPP536/lbp_data_for_analysis.RDS")
+  lbp.fc <- lbp$featureCounts$all
+  lbp.de <- mydata$datasets$lel$de
+  lbp.cv <- lbp$covariates$all
+
+# gene lists
+  lel <- mydata$datasets$lel$de
+  lel[,rank:=frank(P.Value)]
+  gin <- list("allGenes"=list(), "topDeg"=list(), "top100"=list(), "top1000"=list(),
+              "randDeg"=list(), "rand100"=list(), "rand1000"=list())
+  ##
+  ## all genes
+  ##
+  gin$allGenes$dtangle <- list("living"= lel[logFC<0]$gene, "dead"=lel[logFC>0]$gene)
+  gin$allGenes$pca <- lel$gene
+  ##
+  ## all degs
+  ##
+  gin$topDeg$dtangle <- list("living"= lel[adj.P.Val<0.05 & logFC<0]$gene, "dead"=lel[adj.P.Val<0.05 & logFC>0]$gene)
+  gin$topDeg$pca <- lel[adj.P.Val<0.05]$gene
+  ndeg1 <- length(gin$topDeg$dtangle$living)
+  ndeg2 <- length(gin$topDeg$dtangle$dead)
+  ndeg3 <- ndeg1+ndeg2
+  ##
+  ## random degs
+  ##
+  set.seed(666)
+  r0 <- lel$gene
+  r1 <- sample(r0,ndeg1)
+  r2 <- sample(r0[!r0%in%r1], ndeg2)
+  gin$randDeg$dtangle <- list("living"=r1, "dead"=r2)
+  gin$randDeg$pca <- c(r1,r2)
+  ##
+  ## top100
+  ##
+  lv100 <- lel[rank<=100 & logFC<0]$gene
+  pm100 <- lel[rank<=100 & logFC>0]$gene
+  t100 <- c(lv100,pm100)
+  gin$top100$dtangle <- list("living"=lv100, "dead"=pm100)
+  gin$top100$pca <- c(lv100,pm100)
+  ##
+  ## top1000
+  ##
+  lv1000 <- lel[rank<=1000 & logFC<0]$gene
+  pm1000 <- lel[rank<=1000 & logFC>0]$gene
+  t1000 <- c(lv1000,pm1000)
+  gin$top1000$dtangle <- list("living"=lv1000, "dead"=pm1000)
+  gin$top1000$pca <- c(lv1000,pm1000)
+  ##
+  ## rand100
+  ##
+  r0 <- lel$gene
+  r1 <- sample(r0,length(gin$top100$dtangle$living))
+  r2 <- sample(r0[!r0%in%r1], length(gin$top100$dtangle$dead))
+  gin$rand100$dtangle <- list("living"=r1, "dead"=r2)
+  gin$rand100$pca <- c(r1,r2)
+  ##
+  ## rand1000
+  ##
+  r0 <- lel$gene
+  r1 <- sample(r0,length(gin$top1000$dtangle$living))
+  r2 <- sample(r0[!r0%in%r1], length(gin$top1000$dtangle$dead))
+  gin$rand1000$dtangle <- list("living"=r1, "dead"=r2)
+  gin$rand1000$pca <- c(r1,r2)
+
+# dtangle 
+  myinfo <- lbp.cv
+  identical(rownames(myinfo), colnames(lbp.fc)) #[1] TRUE
+  myinfo[myinfo$mymet.postmortem=="postmortem", "mymet.postmortem2"] <- "dead"
+  myinfo[myinfo$mymet.postmortem=="living", "mymet.postmortem2"] <- "living"
+  all_cell_type = myinfo$mymet.postmortem2
+  vobj <- red$voomObject
+  red.dtang <- list()
+  for (thresh in names(gin)){
+      cat(thresh, '\n')
+      add <- pctlbp( mixVobj=vobj, refFC=lbp.fc, refCT=all_cell_type, refDL=gin[[thresh]]$dtangle)
+      add <- merge(as.data.table(red$covariates, keep.rownames=T), add, by.x="rn", by.y="SampleID")
+      red.dtang[[thresh]] <- add
+      colnames(add)[c(8,9)] <- paste(thresh, colnames(add)[c(8,9)], sep="_dtang_")
+      if (thresh=='allGenes') {
+          red.dgl <- add
+      } else {
+          red.dgl <- merge(red.dgl, add[,c(1,8,9)])
+      }
+  }
+
+# pca
+  rob <- red$residuals
+  xxx <- data.table(g=rownames(rob))
+  xxx[,g:=tstrsplit(g, split=".", fixed=T, keep=1)]
+  rownames(rob) <- xxx$g
+  mypca <- list()
+  for (thresh in names(gin)){
+      g <- gin[[thresh]]$pca
+      g <- g[g %in% rownames(rob)]
+      pca2 <- prcomp(t(rob[g,]))
+      add <- as.data.table(pca2$x, keep.rownames=T)[,1:11]
+      ##add <- merge(red.dtang[[thresh]], add, by="rn")
+      mypca[[thresh]] <- add
+      pca2 <- as.data.table(pca2$x, keep.rownames=T)[,.(rn,PC1)]
+      colnames(pca2)[2] <- paste0("rmod_",thresh)
+      if (thresh=='allGenes') {
+         red.pca <- pca2
+      } else {
+          red.pca <- merge(red.pca, pca2)
+      }
+  }
+  red.pca <- merge(as.data.table(red$covariates, keep.rownames=T), red.pca, by="rn")
+
+
+# plots
+  pdf("~/www/figures/lbp/pcacorr_in_rep.pdf")
+  for (j in names(mypca)){
+      cur <- mypca[[j]] 
+      p1 <- ggplot(cur, aes(PC1, PC2, fill=as.factor(mymet.postmortem))) + geom_point(pch=21, size=5) + theme_base() + ggtitle(j)
+      p2 <- ggplot(cur, aes(dead, PC2, fill=as.factor(mymet.postmortem))) + geom_point(pch=21, size=5) + theme_base() + ggtitle(j)
+      p3 <- ggplot(cur, aes(dead, PC1, fill=as.factor(mymet.postmortem))) + geom_point(pch=21, size=5) + theme_base() + ggtitle(j)
+      show(p1)
+      show(p2)
+      show(p3)
+  }
+  dev.off()
+
+# stats
+  redsum <- merge(red.dgl, red.pca)
+  ##r3a <- summary(lm( mymet.postmortem ~ rmod_top100 + mymet.sex + mymet.rin + mymet.phe, data=redsum))
+  ##r3c <- summary(lm( mymet.postmortem ~ top100_dtang_living + mymet.sex + mymet.rin + mymet.phe, data=redsum))
+  ##r3x <- summary(lm( mymet.postmortem ~ mymet.sex + mymet.rin + mymet.phe, data=redsum))
+  r3a <- summary(lm( mymet.postmortem ~ rmod_top100 + mymet.sex + mymet.rin + mymet.phe, data=red.pca))
+  r3x <- summary(lm( mymet.postmortem ~ mymet.sex + mymet.rin + mymet.phe, data=red.pca))
+  r3a$r.squared - r3x$r.squared ##[1] 0.7886541
+  ## pvalue = 8.194893e-166
+
+#+END_SRC
+
+
+
+
+
+
