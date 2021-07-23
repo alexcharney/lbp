@@ -1,0 +1,426 @@
+
+* format neuroimaging data for analysis
+
+#+NAME: prep_data
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table)
+  library(readxl)
+  library(stringr)
+  setwd("/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021")
+
+# master metadata
+  file1 <- "/sc/arion/projects/psychgen/lbp/files/sema4_bulk_rna_sample_sheet/Bulk_RNA_Isolation_Mastertable_BRAINANDBLOOD.xlsx"
+  ctypes <- c("text", rep("text", 14),"date","text","date","text",rep("numeric",4),"text","text")
+  met <- as.data.table(read_excel(file1, sheet=1, col_names = TRUE, col_types=ctypes,  na=c("NA","na","",".","n/a","N/A","unknown","89+")))
+  metr <- met[,.(sid=LBPSEMA4_ID, iid, tissue, bank)]
+  metr[tissue=="Skin", tissue:="SK_Blood"]
+  nrow(met) #[1] 796
+  uniqueN(met[,.(iid)]) #[1] 420
+  nrow(met[extraction_rin>4 & PLATE!="NOT_SENDING"]) #[1] 779
+  map <- met[extraction_rin>4 & PLATE!="NOT_SENDING",.(iid, sid=LBPSEMA4_ID)][grep("BRAIN",sid)]
+
+# imaging data
+  gmd <- as.data.table(read_excel("GM.xlsx"))
+  wmd <- as.data.table(read_excel("WM.xlsx"))
+  
+# lora data (final as of 13JUL2021)
+  lel <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+
+# define covariates 
+  leo.cov <- c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+               "mymet_rna_conc_ngul", "RNASeqMetrics_PCT_INTRONIC_BASES", 
+               "RNASeqMetrics_PCT_CODING_BASES", "mymet_bank", "STAR_pct_of_reads_unmapped_other")
+  lel.cov <- c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+               "neuronal", "RNASeqMetrics_MEDIAN_3PRIME_BIAS", "RNASeqMetrics_PCT_MRNA_BASES", 
+               "mymet_depletionbatch", "InsertSizeMetrics_MEDIAN_INSERT_SIZE", 
+               "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR")
+  
+# format imaging data
+  colnames(gmd) <- gsub("PT_", "PT-", colnames(gmd))
+  colnames(wmd) <- gsub("PT_", "PT-", colnames(wmd))
+  colnames(gmd)[1] <- colnames(wmd)[1] <- "imagingFeature"
+  ##
+  ## gray
+  ##
+  gmi <- data.table(imagingFeature=gmd$imagingFeature)
+  gmi[grep("^lh",imagingFeature), imagingFeatureHemisphere:="L"]
+  gmi[grep("^rh",imagingFeature), imagingFeatureHemisphere:="R"]
+  gmi[grep("^Left_",imagingFeature), imagingFeatureHemisphere:="L"]
+  gmi[grep("^Right_",imagingFeature), imagingFeatureHemisphere:="R"]
+  gmi[grep("_area",imagingFeature), imagingFeatureType:="area"]
+  gmi[grep("_thickness",imagingFeature), imagingFeatureType:="thickness"]
+  gmi[grep("Vol",imagingFeature), imagingFeatureType:="volume"]
+  gmi[,imagingFeatureStructure:=gsub("^lh_", "", imagingFeature)]
+  gmi[,imagingFeatureStructure:=gsub("^rh_", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^lh", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^rh", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^Left_", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^Right_", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("_area", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("_thickness", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=tolower(imagingFeatureStructure)]
+  gmi[imagingFeatureStructure=="thalamus_proper",imagingFeatureStructure:="thalamus"]  #to match terms in white matter data
+  gmi[imagingFeatureStructure=="cc_central",imagingFeatureStructure:="corpuscallosum"]  #to match terms in white matter data
+  ##
+  ## white
+  ##
+  wmi <- data.table(imagingFeature=wmd$imagingFeature)
+  wmi[,c("imagingFeature1","imagingFeature2"):=tstrsplit(imagingFeature, split="_diff_")]
+  wmi[,imagingFeature2:=gsub("_diff", "", imagingFeature2)]
+  wmi[,imagingFeature1Structure:=imagingFeature1]
+  wmi[,imagingFeature2Structure:=imagingFeature2]
+  wmi[grep("^lh_",imagingFeature1), imagingFeature1Hemisphere:="L"]
+  wmi[grep("^rh_",imagingFeature1), imagingFeature1Hemisphere:="R"]
+  wmi[grep("^lh_",imagingFeature2), imagingFeature2Hemisphere:="L"]
+  wmi[grep("^rh_",imagingFeature2), imagingFeature2Hemisphere:="R"]
+  wmi[,imagingFeature1Structure:=gsub("^lh_", "", imagingFeature1Structure)]
+  wmi[,imagingFeature1Structure:=gsub("^rh_", "", imagingFeature1Structure)]
+  wmi[,imagingFeature2Structure:=gsub("^lh_", "", imagingFeature2Structure)]
+  wmi[,imagingFeature2Structure:=gsub("^rh_", "", imagingFeature2Structure)]
+  wmi[,imagingFeature2Structure:=gsub("^rh_", "", imagingFeature2Structure)]
+  wmi[imagingFeature1Structure=="corpuscallosum", imagingFeature1Hemisphere:=NA] #to match terms in the grey matter data
+  wmi[imagingFeature2Structure=="corpuscallosum", imagingFeature2Hemisphere:=NA] #to match terms in the grey matter data
+  tmp <- unique(gmi[,.(x=paste(imagingFeatureHemisphere, imagingFeatureStructure))]$x)
+  nrow(wmi[!imagingFeature1Structure %in% gmi$imagingFeatureStructure]) #[1] 0 ... ok good
+  nrow(wmi[!imagingFeature2Structure %in% gmi$imagingFeatureStructure]) #[1] 0
+  nrow(wmi[! paste(imagingFeature1Hemisphere, imagingFeature1Structure) %in% tmp]) #[1] 0 ... ok good
+  nrow(wmi[! paste(imagingFeature2Hemisphere, imagingFeature2Structure) %in% tmp]) #[1] 0
+  ##
+  ## make indices to connect grey and white
+  ##
+  gmi[,imagingIndexGMF:=paste0("GMF",str_pad(.I-1, 3, pad = "0"))]
+  tmp <- unique(gmi[,.(imagingFeatureHemisphere, imagingFeatureStructure)])
+  tmp[,imagingIndexHS:=paste0("HS",str_pad(.I-1, 3, pad = "0"))]
+  gmi <- merge(gmi,tmp)
+  tm1 <- unique(gmi[,.(imagingFeature1Hemisphere=imagingFeatureHemisphere, imagingFeature1Structure=imagingFeatureStructure, imagingIndexHS1=imagingIndexHS)])
+  tm2 <- unique(gmi[,.(imagingFeature2Hemisphere=imagingFeatureHemisphere, imagingFeature2Structure=imagingFeatureStructure, imagingIndexHS2=imagingIndexHS)])
+  wmi[,imagingIndexWMF:=paste0("WMF",str_pad(.I-1, 4, pad = "0"))]
+  wmi <- merge(wmi, tm1)
+  wmi <- merge(wmi, tm2, by=c("imagingFeature2Hemisphere","imagingFeature2Structure"))
+  gmiOrd <- c("imagingIndexGMF", "imagingIndexHS", "imagingFeature", "imagingFeatureType", "imagingFeatureHemisphere", "imagingFeatureStructure")
+  wmiOrd <- c("imagingIndexWMF", "imagingIndexHS1", "imagingIndexHS2", "imagingFeature", 
+              "imagingFeature1", "imagingFeature2", 
+              "imagingFeature1Hemisphere", "imagingFeature2Hemisphere", 
+              "imagingFeature1Structure", "imagingFeature2Structure")
+  gmi <- gmi[,gmiOrd,with=F]
+  wmi <- wmi[,wmiOrd,with=F]
+  imagingMeta <- list("gm"=list("imaging"=gmi), "wm"=list("imaging"=wmi))
+
+# change names of imaging features in data for cleanliness
+  ##
+  ## gray
+  ##
+  gmd <- merge(gmd, gmi[,.(imagingFeature, imagingIndexGMF)])
+  gmd$imagingFeature <- NULL
+  gmdPpl <- colnames(gmd)[colnames(gmd) != "imagingIndexGMF"]
+  gmdf <- as.data.frame(gmd[,gmdPpl,with=F])
+  rownames(gmdf) <- gmd$imagingIndexGMF
+  gmt <- as.data.table(t(gmdf), keep.rownames=T)
+  colnames(gmt)[1] <- "iid"
+  nrow(gmt) == nrow(gmt[iid %in% map$iid]) #[1] TRUE
+  gmt <- merge(gmt, map)
+  imagingMeta$gm$sid2iid <- map[iid %in% gmt$iid]
+  gmt$iid <- NULL
+  gmtGmf <- colnames(gmt)[colnames(gmt) != "sid"]
+  gmtf <- as.data.frame(gmt[,gmtGmf,with=F])
+  rownames(gmtf) <- gmt$sid
+  gmtf <- as.data.frame(t(gmtf))
+  imagingMeta$gm$data <- gmtf
+  ##
+  ## white
+  ##  
+  wmd <- merge(wmd, wmi[,.(imagingFeature, imagingIndexWMF)])
+  wmd$imagingFeature <- NULL
+  wmdPpl <- colnames(wmd)[colnames(wmd) != "imagingIndexWMF"]
+  wmdf <- as.data.frame(wmd[,wmdPpl,with=F])
+  rownames(wmdf) <- wmd$imagingIndexWMF
+  wmt <- as.data.table(t(wmdf), keep.rownames=T)
+  colnames(wmt)[1] <- "iid"
+  nrow(wmt) == nrow(wmt[iid %in% map$iid]) #[1] FALSE ... there are 46 individuals with WM data but no rnaseq (these are mostly people enrolled since rnaseq)
+  wmt <- wmt[iid %in% map$iid]
+  wmt <- merge(wmt, map)
+  imagingMeta$wm$sid2iid <- map[iid %in% wmt$iid]
+  wmt$iid <- NULL
+  wmtWmf <- colnames(wmt)[colnames(wmt) != "sid"]
+  wmtf <- as.data.frame(wmt[,wmtWmf,with=F])
+  rownames(wmtf) <- wmt$sid
+  wmtf <- as.data.frame(t(wmtf))
+  imagingMeta$wm$data <- wmtf
+
+# define covariates 
+  imagingMeta$covariates <- list("leo"=c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+                                         "mymet_rna_conc_ngul", "RNASeqMetrics_PCT_INTRONIC_BASES", 
+                                         "RNASeqMetrics_PCT_CODING_BASES", "mymet_bank", "STAR_pct_of_reads_unmapped_other"),
+                                 "lel"=c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+                                         "neuronal", "RNASeqMetrics_MEDIAN_3PRIME_BIAS", "RNASeqMetrics_PCT_MRNA_BASES", 
+                                         "mymet_depletionbatch", "InsertSizeMetrics_MEDIAN_INSERT_SIZE", 
+                                         "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR"))
+  imagingMeta$expressionData <- lel
+
+# save
+  saveRDS(imagingMeta, file="/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/dataForDream19JUL2021.RDS")
+
+# write list of features
+  gmStatic <- names(which( apply(data$gm$data, 1, var)  == 0 )) # features with no variance
+  wmStatic <- names(which( apply(data$wm$data, 1, var)  == 0 ))
+  fList <- data.table(index=c(data$gm$imaging$imagingIndexGMF, data$wm$imaging$imagingIndexWMF))
+  fList <- fList[!index %in% c(gmStatic, wmStatic)]
+  fwrite(fList, row=F, col=F, quo=F, file="/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/imagingIndexList.txt")
+
+#+END_SRC
+
+
+* run dream for all features
+
+#+NAME: run_dream
+#+BEGIN_SRC shell
+
+# setup 
+  ml R/4.0.3
+  ils=/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/imagingIndexList.txt
+  scr=/sc/arion/work/charna02/scripts/lbp/neuroimaging_dream_de.r
+  odr=/sc/arion/projects/psychgen2/lbp/results/neuroimaging/awcDreamTest
+
+# run
+  cd ${odr}
+  ##for i in `cat ${ils}`
+  for i in `cat fail`
+  do mybsub psychgen ${i} 5000 1:00 premium 20 "Rscript ${scr} ${i} ${odr}/${i}.tsv"
+  done
+
+# check
+  cd ${odr}
+  ls *.stdout | sort | uniq | sed s/'.stdout'/''/g > sent
+  fgrep -m1 Successfully *.stdout | awk -F":" '{print $1}' | sort | uniq | sed s/'.stdout'/''/g > success
+  comm -23 sent success | tr '.' ' ' | awk '{print $1}' > fail
+  wc -l ${ils} sent success fail
+  ##6674 /sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/imagingIndexList.txt
+  ##6674 sent
+  ##6674 success
+  ##   0 fail
+
+#+END_SRC
+
+
+* compile dream results for all features
+
+#+NAME: compile_dream
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table)
+  library(foreach)
+  library(parallel)
+  library(doMC)
+  options(cores = detectCores())
+  registerDoMC(32)
+  library(ggplot2)
+  library(ggthemes)
+  setwd("/sc/arion/projects/psychgen2/lbp/results/neuroimaging/awcDreamTest")
+
+# imaging data
+  data <- readRDS("/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/dataForDream19JUL2021.RDS")
+  gInfo <- data$gm$imaging
+  wInfo <- data$wm$imaging
+
+# read in results
+  fList <- Sys.glob("*.tsv")
+  empty <- matrix(0, nrow=21664, ncol=length(fList))
+  empls <- list("lfc" = empty, "pvl" = empty, "pad" = empty)
+  mList <- list("lel" = empls, "leo" = empls) 
+  genes <- fread(fList[1])$gene
+  for (i in names(mList)){for (j in names(mList[[i]])){colnames(mList[[i]][[j]]) <- gsub(".tsv", "", fList)}}
+  for (i in names(mList)){for (j in names(mList[[i]])){rownames(mList[[i]][[j]]) <- genes}}
+  cnt <- 1
+  for (i in fList){
+    if (cnt %% 100 == 0 ) cat("\r",cnt,"\t\t")
+    cnt <- cnt+1
+    imf <- gsub(".tsv", "", i)
+    cur <- fread(i)
+    cur <- cur[order(match(gene, genes))]
+    mList$lel$lfc[,imf] <- cur$logFC.lel
+    mList$lel$pvl[,imf] <- cur$P.Value.lel
+    mList$lel$pad[,imf] <- cur$adj.P.Val.lel
+    mList$leo$lfc[,imf] <- cur$logFC.leo
+    mList$leo$pvl[,imf] <- cur$P.Value.leo
+    mList$leo$pad[,imf] <- cur$adj.P.Val.leo
+  }
+  saveRDS(mList, file="resultsFromDream19JUL2021.RDS")
+
+# Work In Progress - counts
+  lel.nDeg <- as.data.table(colSums(mList$lel$pad < 0.05), keep.rownames=T)[,.(imagingFeature=V1, ndegLEL=V2)]
+  leo.nDeg <- as.data.table(colSums(mList$leo$pad < 0.05), keep.rownames=T)[,.(imagingFeature=V1, ndegLEO=V2)]
+  lel.nNom <- as.data.table(colSums(mList$lel$pvl < 0.05), keep.rownames=T)[,.(imagingFeature=V1, nnomLEL=V2)]
+  leo.nNom <- as.data.table(colSums(mList$leo$pvl < 0.05), keep.rownames=T)[,.(imagingFeature=V1, nnomLEO=V2)]
+  nDeg <- merge(merge(merge(lel.nDeg, leo.nDeg), lel.nNom), leo.nNom)
+
+# Work In Progress - correlate results from lel and leo models
+  modCompare <- foreach(i = 1:length(fList), .combine = rbind )%dopar%{
+      if (i %% 100 == 0 ) cat("\r",i,"\t\t")
+      imf <- gsub(".tsv", "", fList[i])
+      cRes <- cor.test(mList$lel$lfc[,imf], mList$leo$lfc[,imf], method="spearman")
+      add <- data.table(imagingFeature=imf, rho=cRes$estimate, p=cRes$p.value)
+      add
+  }
+  modCompare <- merge(modCompare, nDeg, by="imagingFeature")
+  modCompare[,ndegDiff:=abs(ndegLEL-ndegLEO)]
+  modCompare[,nnomDiff:=abs(nnomLEL-nnomLEO)]
+
+# Work In Progress - some plots
+  p1 <- ggplot(modCompare, aes(rho)) + geom_density() + theme_base()
+  p2 <- ggplot(modCompare, aes(nnomLEO, nnomLEL)) + geom_point() + theme_base() + ylim(0,11000) + xlim(0,11000)
+  p3 <- ggplot(modCompare, aes(rho, nnomDiff)) + geom_point() + theme_base()
+  p4 <- ggplot(modCompare, aes(nnomLEO, nnomLEL)) + geom_bin2d(bins = 200) + scale_fill_continuous(type = "viridis") + theme_base() + ylim(0,11000) + xlim(0,11000)
+
+# Work In Progress - gene summary
+  nomGcntUp <- unlist(lapply(dList, function(x) x[P.Value.lel<0.05 & logFC.lel>0]$gene))
+  nomGcntDw <- unlist(lapply(dList, function(x) x[P.Value.lel<0.05 & logFC.lel<0]$gene))
+  sigGcntUp <- unlist(lapply(dList, function(x) x[adj.P.Val.lel<0.05 & logFC.lel>0]$gene))
+  sigGcntDw <- unlist(lapply(dList, function(x) x[adj.P.Val.lel<0.05 & logFC.lel<0]$gene))
+  nomGcntUp <- as.data.table(table(nomGcntUp))[,.(gene=nomGcntUp, nomGcntUp=N)]
+  nomGcntDw <- as.data.table(table(nomGcntDw))[,.(gene=nomGcntDw, nomGcntDw=N)]
+  sigGcntUp <- as.data.table(table(sigGcntUp))[,.(gene=sigGcntUp, sigGcntUp=N)]
+  sigGcntDw <- as.data.table(table(sigGcntDw))[,.(gene=sigGcntDw, sigGcntDw=N)]
+  myCounts <- merge(merge(merge(nomGcntUp, nomGcntDw, all=T), sigGcntUp, all=T), sigGcntDw, all=T)
+  nrow(dList[[1]]) == nrow(myCounts) #[1] TRUE ... every gene is significant at least once
+  myCounts[ is.na(nomGcntUp) , nomGcntUp := 0 ] 
+  myCounts[ is.na(nomGcntDw) , nomGcntDw := 0 ] 
+  myCounts[ is.na(sigGcntUp) , sigGcntUp := 0 ] 
+  myCounts[ is.na(sigGcntDw) , sigGcntDw := 0 ]
+  myCounts[,nomPctUp:=nomGcntUp/(nomGcntUp+nomGcntDw)]
+  myCounts[,sigPctUp:=sigGcntUp/(sigGcntUp+sigGcntDw)]
+
+#+END_SRC
+
+
+* run GO enrichment for all features
+
+#+NAME+ run_go
+#+BEGIN_SRC shell
+
+# setup 
+  ml R/4.0.3
+  ils=/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/imagingIndexList.txt
+  scr=/sc/arion/work/charna02/scripts/lbp/neuroimaging_dream_de_gofigure.r
+  odr=/sc/arion/projects/psychgen2/lbp/results/neuroimaging/awcDreamTest
+
+# run
+  cd ${odr}
+  for i in `cat ${ils}`
+  do mybsub psychgen ${i}.GO 5000 1:00 premium 1 "Rscript ${scr} ${i} ${odr}/${i}.tsv ${odr}/${i}.GO.tsv"
+  done
+
+# check
+  cd ${odr}
+  ls *.GO.stdout | sort | uniq | sed s/'.GO.stdout'/''/g > sent
+  fgrep -m1 Successfully *.GO.stdout | awk -F":" '{print $1}' | sort | uniq | sed s/'.GO.stdout'/''/g > success
+  comm -23 sent success | tr '.' ' ' | awk '{print $1}' > fail
+  wc -l ${ils} sent success fail
+  ##6674 /sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/imagingIndexList.txt
+  ##6674 sent
+  ##6674 success
+  ##   0 fail
+  ##
+  rm *.GO.std{err,out}
+
+# list GO terms
+  cd ${odr}
+  find ./ -wholename "*GO.tsv" | grep combined -v | xargs cat > combined.GO.tsv &
+  awk '{print $2":"$6}' combined.GO.tsv | sort | uniq | grep ontology -v > combined.GO.terms & 
+
+#+END_SRC
+
+
+* compile GO enrichment results for all features
+
+#+NAME: go_assess
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table)
+  library(foreach)
+  library(parallel)
+  library(doMC)
+  options(cores = detectCores())
+  registerDoMC(32)
+  library(ggplot2)
+  library(ggthemes)
+  setwd("/sc/arion/projects/psychgen2/lbp/results/neuroimaging/awcDreamTest")
+
+# function for processing go output
+  processGo <- function(x){
+      ret <- list()
+      for(a in c("lel", "leo")){
+          for(b in c("sig", "nom")){
+              for (c in c("up", "down")){
+                  now <- x[recipe==a & degDef==b & degDir==c]
+                  now[,fe:=Significant/Expected]
+                  now[,bh:=p.adjust(classic,method="BH", n=nrow(cur))]
+                  now <- now[,.(go=paste(ontology, GO.ID, sep=":"), fe, pv=classic, bh)]
+                  nw0 <- as.data.frame(now[,.(fe)])
+                  nw1 <- as.data.frame(now[,.(pv)])
+                  nw2 <- as.data.frame(now[,.(bh)])
+                  rownames(nw0) <- rownames(nw1) <- rownames(nw2) <- now$go
+                  ret[[paste(a, b, c, sep="|")]] <- list("fe"=nw0, "pv"=nw1, "bh"=nw2)
+              }
+          }
+      }
+      ret
+  }
+
+# imaging data
+  data <- readRDS("/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/dataForDream19JUL2021.RDS")
+  gInfo <- data$gm$imaging
+  wInfo <- data$wm$imaging
+
+# list GO terms (should be 21789 but this is way to be sure even though it takes time)
+  fList <- Sys.glob("*.GO.tsv")
+  dTerms <- c()
+  cnt <- 1 
+  for (i in fList){
+    if (cnt %% 100 == 0 ) cat("\r",cnt,"\t\t")
+    cnt <- cnt+1
+    dTerms <- unique(c(dTerms, fread(i)[,.(x=paste(ontology, `GO.ID`))]$x))
+  }
+  dTerms <- gsub(" ", ":", dTerms) 
+  iTerms <-  gsub(".GO.tsv", "", fList)
+
+# make matrices to populate
+  empty <- matrix(0, nrow=length(dTerms), ncol=length(iTerms))
+  rownames(empty) <- dTerms
+  colnames(empty) <- iTerms
+  mList <- list( "fe"=list("lel|sig|up" = empty, "lel|sig|down" = empty, "lel|nom|up" = empty, 
+                          "lel|nom|down" = empty, "leo|sig|up" = empty, "leo|sig|down" = empty, 
+                          "leo|nom|up" = empty, "leo|nom|down" = empty),
+                "pv"=list("lel|sig|up" = empty, "lel|sig|down" = empty, "lel|nom|up" = empty, 
+                          "lel|nom|down" = empty, "leo|sig|up" = empty, "leo|sig|down" = empty, 
+                          "leo|nom|up" = empty, "leo|nom|down" = empty),
+                "bh"=list("lel|sig|up" = empty, "lel|sig|down" = empty, "lel|nom|up" = empty, 
+                          "lel|nom|down" = empty, "leo|sig|up" = empty, "leo|sig|down" = empty, 
+                          "leo|nom|up" = empty, "leo|nom|down" = empty) )
+
+# read in GO results
+  ###goResults <- c()
+  ###goResults <- foreach(i = 1:length(fList), .combine = rbind )%dopar%{
+  for (i in 1:length(fList)){
+      ##if (i %% 100 == 0 ) cat("\r",i,"\t\t")
+      cat("\r",i,"\t\t")
+      imf <- gsub(".GO.tsv", "", fList[i])
+      cur <- fread(fList[i])
+      cur[,classic:=gsub("< ", "", classic)]
+      cur[,classic:=as.numeric(classic)]
+      cr2 <- processGo(cur)
+      for (j in names(cr2)){
+          for(k in c("fe", "pv", "bh")){
+              cr3 <- cr2[[j]][[k]]
+              mList[[k]][[j]][rownames(cr3),imf] <- cr3[,k]
+          }
+      }
+  }
+  saveRDS(mList, file="goResultsFromDream19JUL2021.RDS")
+
+#+END_SRC
+
+
