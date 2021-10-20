@@ -1,0 +1,559 @@
+* Prep Figure Input | Wave 1 vs. Wave 2 
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+
+# session info
+  sessionInfo()  
+
+# batch 1 de results
+  lel <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/batch1_de.RDS")
+  lelcov <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/batch1_de_cov.RDS")
+
+# wave2 data
+  lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  wave2samples <- lbp$covariates[!ISM_SEMA4 %in% lelcov$ISM_SEMA4]$SAMPLE_ISMMS
+  wave2resids <- lbp$residuals[,wave2samples]
+  tmp <- data.table(g=rownames(wave2resids))
+  tmp[,g:=tstrsplit(g, split=".", fixed=T, keep=1)]
+  rownames(wave2resids) <- tmp$g
+
+# replication analysis
+  lel <- lel[gene %in% rownames(wave2resids)]
+  lel[,rank:=frank(P.Value)]
+  top <- lel[rank<=100]$gene
+  pca1 <- prcomp(t(wave2resids[top,]))
+  pca2 <- prcomp(cov(wave2resids[top,]))
+  mypca1 <- as.data.table(pca1$x, keep.rownames=T)[,1:11]
+  mypca2 <- as.data.table(pca2$x, keep.rownames=T)[,1:11]
+  mypca1 <- merge(mypca1, lbp$covariates, by.x="rn", by.y="SAMPLE_ISMMS")
+  mypca2 <- merge(mypca2, lbp$covariates, by.x="rn", by.y="SAMPLE_ISMMS")
+  r3a <- summary(lm( mymet_postmortem ~ PC1 + mymet_sex + mymet_rin + mymet_phe, data=mypca2))
+  r3x <- summary(lm( mymet_postmortem ~ mymet_sex + mymet_rin + mymet_phe, data=mypca2))
+  r3a$r.squared - r3x$r.squared #[1] 0.5705735
+  r3a$coefficients["PC1","Pr(>|t|)"] #[1] 7.379764e-93
+
+# save
+  saveRDS(list("dt"=mypca, "pcObj"=pca2), file="/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_w1w2_14OCT2021.RDS")
+
+#+END_SRC
+
+
+* Prep Figure Input | PMI
+
+#+BEGIN_SRC R
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(data.table))
+  suppressMessages(library(sp))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(BiocParallel))
+  suppressMessages(library("R.matlab"))
+  suppressMessages(library(goseq))
+  suppressMessages(library(topGO))
+  suppressMessages(library(org.Hs.eg.db))
+  suppressMessages(library(Rgraphviz))
+  suppressMessages(library(rrvgo))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+  set.seed(666)
+  organism <- "org.Hs.eg.db"
+  suppressMessages(library(clusterProfiler))
+  suppressMessages(library(enrichplot))
+  suppressMessages(library(DOSE))
+  suppressMessages(library(organism, character.only = TRUE))
+
+# read in lbp data
+  lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  met <- lbp$covariates
+  vob <- lbp$vobjDream
+
+# living samples
+
+  ## define all living samples
+  liv <- met[mymet_postmortem==0]$SAMPLE_ISMMS
+
+  ## split into halves for harvard and columbia
+  hlv <- sample(liv, size=round(length(which(met$mymet_postmortem==0))/2), replace=FALSE)
+  clv <- liv[!liv %in% hlv]
+
+  ## split the harvard half into halves for hi and lo pmi
+  hl1 <- sample(hlv, size=round(length(hlv)/2), replace=FALSE)
+  hl2 <- hlv[!hlv %in% hl1]
+
+  ## split the columbia half into halves for hi and lo pmi
+  cl1 <- sample(clv, size=round(length(clv)/2), replace=FALSE)
+  cl2 <- clv[!clv %in% cl1]
+
+  ## counts
+  length(hl1) #[1] 69
+  length(hl2) #[1] 69
+  length(cl1) #[1] 68
+  length(cl2) #[1] 69
+
+# postmortem samples
+
+  ## define harvard and columbia postmortem samples
+  pmh <- met[Bank =="HARVARD", .(sid=SAMPLE_ISMMS, pmi=cold_pmi_CORRECTED)][!is.na(pmi)][order(pmi)]
+  pmc <- met[Bank =="COLUMBIA", .(sid=SAMPLE_ISMMS, pmi=cold_pmi_CORRECTED)][!is.na(pmi)][order(pmi)]
+
+  ## define pmi quartiiles for the two banks (1=lowest pmi, 4=highest pmi)
+  pmh[,pmiquartile := floor( 1 + 4 * (.I-1) / .N)]
+  pmc[,pmiquartile := floor( 1 + 4 * (.I-1) / .N)]
+
+  ## define groups for hi and lo pmi in each bank
+  hp1 <- pmh[pmiquartile==1]$sid
+  hp2 <- pmh[pmiquartile==4]$sid
+  cp1 <- pmc[pmiquartile==1]$sid
+  cp2 <- pmc[pmiquartile==4]$sid
+
+  ## counts
+  length(hp1) #[1] 26
+  length(hp2) #[1] 26
+  length(cp1) #[1] 28
+  length(cp2) #[1] 27
+
+  ## means
+  mean(pmh[pmiquartile==1]$pmi) #[1] 13.11308
+  mean(pmh[pmiquartile==4]$pmi) #[1] 27.23346
+  mean(pmc[pmiquartile==1]$pmi) #[1] 2.145714
+  mean(pmc[pmiquartile==4]$pmi) #[1] 14.3337
+
+# update metadata
+  met[,pmide:="notassigned"]
+  met[SAMPLE_ISMMS %in% hl1, pmide:="har_lopmi_LV"]
+  met[SAMPLE_ISMMS %in% hl2, pmide:="har_hipmi_LV"]
+  met[SAMPLE_ISMMS %in% cl1, pmide:="col_lopmi_LV"]
+  met[SAMPLE_ISMMS %in% cl2, pmide:="col_hipmi_LV"]
+  met[SAMPLE_ISMMS %in% hp1, pmide:="har_lopmi_PM"]
+  met[SAMPLE_ISMMS %in% hp2, pmide:="har_hipmi_PM"]
+  met[SAMPLE_ISMMS %in% cp1, pmide:="col_lopmi_PM"]
+  met[SAMPLE_ISMMS %in% cp2, pmide:="col_hipmi_PM"]
+  met[,pmide:=as.factor(pmide)]
+  met <- as.data.frame(met)
+  rownames(met) <- met$SAMPLE_ISMMS
+
+# formula
+  form <- ~0 + pmide + (1|mymet_sex) + mymet_rin + neuronal + RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+
+# sanity check
+  identical(rownames(met), colnames(vob$E)) #[1] TRUE
+
+# contrasts
+  harLoCon <- getContrast(vob, form, met, c(paste0("pmide","har_lopmi_PM"), paste0("pmide","har_lopmi_LV")))
+  harHiCon <- getContrast(vob, form, met, c(paste0("pmide","har_hipmi_PM"), paste0("pmide","har_hipmi_LV")))
+  colLoCon <- getContrast(vob, form, met, c(paste0("pmide","col_lopmi_PM"), paste0("pmide","col_lopmi_LV")))
+  colHiCon <- getContrast(vob, form, met, c(paste0("pmide","col_hipmi_PM"), paste0("pmide","col_hipmi_LV")))
+  harPmCon <- getContrast(vob, form, met, c(paste0("pmide","har_hipmi_PM"), paste0("pmide","har_lopmi_PM")))
+  colPmCon <- getContrast(vob, form, met, c(paste0("pmide","col_hipmi_PM"), paste0("pmide","col_lopmi_PM")))
+  L <- cbind(harLoCon,harHiCon,colLoCon,colHiCon,harPmCon,colPmCon)
+
+# de
+  fitmm <- dream( vob, form, met, L, BPPARAM = MulticoreParam(5))
+
+# format de results
+  harLoDe <- topTable(fitmm, coef="harLoCon", number=nrow(vob))
+  harHiDe <- topTable(fitmm, coef="harHiCon", number=nrow(vob))
+  harPmDe <- topTable(fitmm, coef="harPmCon", number=nrow(vob))
+  colLoDe <- topTable(fitmm, coef="colLoCon", number=nrow(vob))
+  colHiDe <- topTable(fitmm, coef="colHiCon", number=nrow(vob))
+  colPmDe <- topTable(fitmm, coef="colPmCon", number=nrow(vob))
+  harLoDe <- data.table(gene = rownames(harLoDe), harLoDe)[order(logFC)]
+  harHiDe <- data.table(gene = rownames(harHiDe), harHiDe)[order(logFC)]
+  harPmDe <- data.table(gene = rownames(harPmDe), harPmDe)[order(logFC)]
+  colLoDe <- data.table(gene = rownames(colLoDe), colLoDe)[order(logFC)]
+  colHiDe <- data.table(gene = rownames(colHiDe), colHiDe)[order(logFC)]
+  colPmDe <- data.table(gene = rownames(colPmDe), colPmDe)[order(logFC)]
+  harLoDe[, DEG:="NOTDEG"]
+  harHiDe[, DEG:="NOTDEG"]
+  harPmDe[, DEG:="NOTDEG"]
+  colLoDe[, DEG:="NOTDEG"]
+  colHiDe[, DEG:="NOTDEG"]
+  colPmDe[, DEG:="NOTDEG"]
+  harLoDe[adj.P.Val<0.05, DEG:="DEG"]
+  harHiDe[adj.P.Val<0.05, DEG:="DEG"]
+  harPmDe[adj.P.Val<0.05, DEG:="DEG"]
+  colLoDe[adj.P.Val<0.05, DEG:="DEG"]
+  colHiDe[adj.P.Val<0.05, DEG:="DEG"]
+  colPmDe[adj.P.Val<0.05, DEG:="DEG"]
+  harLoDe[logFC<0, LFC:="NEGLFC"]
+  harHiDe[logFC<0, LFC:="NEGLFC"]
+  harPmDe[logFC<0, LFC:="NEGLFC"]
+  colLoDe[logFC<0, LFC:="NEGLFC"]
+  colHiDe[logFC<0, LFC:="NEGLFC"]
+  colPmDe[logFC<0, LFC:="NEGLFC"]
+  harLoDe[logFC>0, LFC:="POSLFC"]
+  harHiDe[logFC>0, LFC:="POSLFC"]
+  harPmDe[logFC>0, LFC:="POSLFC"]
+  colLoDe[logFC>0, LFC:="POSLFC"]
+  colHiDe[logFC>0, LFC:="POSLFC"]
+  colPmDe[logFC>0, LFC:="POSLFC"]
+  hl1.m <- as.data.table(rowMeans(vob$E[,hl1]), keep.rownames=T)[,.(gene=V1, har_lopmi_LV=V2)]
+  hp1.m <- as.data.table(rowMeans(vob$E[,hp1]), keep.rownames=T)[,.(gene=V1, har_lopmi_PM=V2)]
+  hl2.m <- as.data.table(rowMeans(vob$E[,hl2]), keep.rownames=T)[,.(gene=V1, har_hipmi_LV=V2)]
+  hp2.m <- as.data.table(rowMeans(vob$E[,hp2]), keep.rownames=T)[,.(gene=V1, har_hipmi_PM=V2)]
+  cl1.m <- as.data.table(rowMeans(vob$E[,cl1]), keep.rownames=T)[,.(gene=V1, col_lopmi_LV=V2)]
+  cp1.m <- as.data.table(rowMeans(vob$E[,cp1]), keep.rownames=T)[,.(gene=V1, col_lopmi_PM=V2)]
+  cl2.m <- as.data.table(rowMeans(vob$E[,cl2]), keep.rownames=T)[,.(gene=V1, col_hipmi_LV=V2)]
+  cp2.m <- as.data.table(rowMeans(vob$E[,cp2]), keep.rownames=T)[,.(gene=V1, col_hipmi_PM=V2)]
+  harLoDe <- merge(merge(harLoDe, hl1.m), hp1.m)
+  harHiDe <- merge(merge(harHiDe, hl2.m), hp2.m)
+  harPmDe <- merge(merge(harPmDe, hp1.m), hp2.m)
+  colLoDe <- merge(merge(colLoDe, cl1.m), cp1.m)
+  colHiDe <- merge(merge(colHiDe, cl2.m), cp2.m)
+  colPmDe <- merge(merge(colPmDe, cp1.m), cp2.m)
+  harLoDe[har_lopmi_LV>har_lopmi_PM,greaterExpression:="living"]
+  harLoDe[har_lopmi_LV<har_lopmi_PM,greaterExpression:="postmortem"]
+  harHiDe[har_hipmi_LV>har_hipmi_PM,greaterExpression:="living"]
+  harHiDe[har_hipmi_LV<har_hipmi_PM,greaterExpression:="postmortem"]
+  harPmDe[har_lopmi_PM>har_hipmi_PM,greaterExpression:="lopmi"]
+  harPmDe[har_lopmi_PM<har_hipmi_PM,greaterExpression:="hipmi"]
+  colLoDe[col_lopmi_LV>col_lopmi_PM,greaterExpression:="living"]
+  colLoDe[col_lopmi_LV<col_lopmi_PM,greaterExpression:="postmortem"]
+  colHiDe[col_hipmi_LV>col_hipmi_PM,greaterExpression:="living"]
+  colHiDe[col_hipmi_LV<col_hipmi_PM,greaterExpression:="postmortem"]
+  colPmDe[col_lopmi_PM>col_hipmi_PM,greaterExpression:="lopmi"]
+  colPmDe[col_lopmi_PM<col_hipmi_PM,greaterExpression:="hipmi"]
+
+# merge logFC values
+  x1 <- harLoDe[,.(gene, logFC.harLo=logFC)] 
+  x2 <- harHiDe[,.(gene, logFC.harHi=logFC)] 
+  x3 <- harPmDe[,.(gene, logFC.harPm=logFC)]
+  x4 <- colLoDe[,.(gene, logFC.colLo=logFC)]
+  x5 <- colHiDe[,.(gene, logFC.colHi=logFC)]
+  x6 <- colPmDe[,.(gene, logFC.colPm=logFC)]
+  mx <- merge(merge(merge(merge(merge(x1, x2), x3), x4), x5), x6)
+  rs1 <- cor.test(mx$logFC.harLo, mx$logFC.harHi, method="spearman")
+  rs2 <- cor.test(mx$logFC.colLo, mx$logFC.colHi, method="spearman")
+  rs3 <- cor.test(mx$logFC.harLo, mx$logFC.harPm, method="spearman")
+  rs4 <- cor.test(mx$logFC.harHi, mx$logFC.harPm, method="spearman")
+  rs5 <- cor.test(mx$logFC.colLo, mx$logFC.colPm, method="spearman")
+  rs6 <- cor.test(mx$logFC.colHi, mx$logFC.colPm, method="spearman")
+  rs7 <- cor.test(mx$logFC.harLo, mx$logFC.colLo, method="spearman")
+  rs8 <- cor.test(mx$logFC.harHi, mx$logFC.colHi, method="spearman")
+  rs9 <- cor.test(mx$logFC.harLo, mx$logFC.colHi, method="spearman")
+  r10 <- cor.test(mx$logFC.harLo, mx$logFC.colPm, method="spearman")
+  r11 <- cor.test(mx$logFC.harHi, mx$logFC.colPm, method="spearman")
+  r12 <- cor.test(mx$logFC.colLo, mx$logFC.harPm, method="spearman")
+  r13 <- cor.test(mx$logFC.colHi, mx$logFC.harPm, method="spearman")
+  ad1 <- data.table(de="livpmlo_vs_livpmhi", bank="h_vs_h", rho=rs1$estimate, p=rs1$p.value)
+  ad2 <- data.table(de="livpmlo_vs_livpmhi", bank="c_vs_c", rho=rs2$estimate, p=rs2$p.value)
+  ad3 <- data.table(de="livpmlo_vs_pmlopmhi", bank="h_vs_h", rho=rs3$estimate, p=rs3$p.value)
+  ad4 <- data.table(de="livpmhi_vs_pmlopmhi", bank="h_vs_h", rho=rs4$estimate, p=rs4$p.value)
+  ad5 <- data.table(de="livpmlo_vs_pmlopmhi", bank="c_vs_c", rho=rs5$estimate, p=rs5$p.value)
+  ad6 <- data.table(de="livpmhi_vs_pmlopmhi", bank="c_vs_c", rho=rs6$estimate, p=rs6$p.value)
+  ad7 <- data.table(de="livpmlo_vs_livpmlo", bank="h_vs_c", rho=rs7$estimate, p=rs7$p.value)
+  ad8 <- data.table(de="livpmhi_vs_livpmhi", bank="h_vs_c", rho=rs8$estimate, p=rs8$p.value)
+  ad9 <- data.table(de="livpmlo_vs_livpmhi", bank="h_vs_c", rho=rs9$estimate, p=rs9$p.value)
+  a10 <- data.table(de="livpmlo_vs_pmlopmhi", bank="h_vs_c", rho=r10$estimate, p=r10$p.value)
+  a11 <- data.table(de="livpmhi_vs_pmlopmhi", bank="h_vs_c", rho=r11$estimate, p=r11$p.value)
+  a12 <- data.table(de="livpmlo_vs_pmlopmhi", bank="c_vs_h", rho=r12$estimate, p=r12$p.value)
+  a13 <- data.table(de="livpmhi_vs_pmlopmhi", bank="c_vs_h", rho=r13$estimate, p=r13$p.value)
+  res <- rbind(ad1, ad2, ad3, ad4, ad5, ad6, ad7, ad8, ad9, a10, a11, a12, a13)
+
+# save 
+  saveRDS(list("har_livpm_lopmi"=harLoDe, "har_livpm_hipmi"=harHiDe, "har_pmpm"=harPmDe,
+               "col_livpm_lopmi"=colLoDe, "col_livpm_hipmi"=colHiDe, "col_pmpm"=colPmDe, "res"=res),
+          file="/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_diffpmi_02OCT2021.RDS")
+  myres <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_diffpmi_02OCT2021.RDS")
+
+
+#+END_SRC
+
+
+* Prep Figure Input | PD
+
+#+BEGIN_SRC R
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+  suppressMessages(library(sp))
+  suppressMessages(library(biomaRt))
+  suppressMessages(library(gsubfn))
+  suppressMessages(library(viridis))
+  suppressMessages(library(Matrix))
+  suppressMessages(library(stats))
+  suppressMessages(library(BiocParallel))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+
+# read in lbp data
+  lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  met <- lbp$covariates
+  vob <- lbp$vobjDream
+
+# living samples
+  lvk <- met[mymet_postmortem==0 & mymet_phe=="PD"]$SAMPLE_ISMMS
+  lvc <- met[mymet_postmortem==0 & mymet_phe=="Control"]$SAMPLE_ISMMS
+
+# postmortem samples
+  pmk <- met[mymet_postmortem==1 & mymet_phe=="PD"]$SAMPLE_ISMMS
+  pmc <- met[mymet_postmortem==1 & mymet_phe=="Control"]$SAMPLE_ISMMS
+
+# counts
+  length(lvk) #[1] 220
+  length(lvc) #[1] 55
+  length(pmk) #[1] 132
+  length(pmc) #[1] 111
+
+# update metadata
+  met[,pdde:="notassigned"]
+  met[SAMPLE_ISMMS %in% lvk, pdde:="LIVPMDE_PD_LV"]
+  met[SAMPLE_ISMMS %in% pmk, pdde:="LIVPMDE_PD_PM"]
+  met[SAMPLE_ISMMS %in% lvc, pdde:="LIVPMDE_CN_LV"]
+  met[SAMPLE_ISMMS %in% pmc, pdde:="LIVPMDE_CN_PM"]
+  met[,pdde:=as.factor(pdde)]
+  met <- as.data.frame(met)
+  rownames(met) <- met$SAMPLE_ISMMS
+
+# formula
+  form <- ~0 + pdde + (1|mymet_sex) + mymet_rin + neuronal + RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+
+# sanity check
+  identical(rownames(met), colnames(vob$E)) #[1] TRUE
+
+# contrasts
+  caseCon <- getContrast(vob, form, met, c(paste0("pdde","LIVPMDE_PD_PM"), paste0("pdde","LIVPMDE_PD_LV")))
+  ctrlCon <- getContrast(vob, form, met, c(paste0("pdde","LIVPMDE_CN_PM"), paste0("pdde","LIVPMDE_CN_LV")))
+  L <- cbind(caseCon,ctrlCon)
+
+# de
+  fitmm <- dream( vob, form, met, L, BPPARAM = MulticoreParam(5))
+
+# format de results
+  caseDe <- topTable(fitmm, coef="caseCon", number=nrow(vob))
+  ctrlDe <- topTable(fitmm, coef="ctrlCon", number=nrow(vob))
+  caseDe <- data.table(gene = rownames(caseDe), caseDe)[order(logFC)]
+  ctrlDe <- data.table(gene = rownames(ctrlDe), ctrlDe)[order(logFC)]
+  caseDe[, DEG:="NOTDEG"]
+  ctrlDe[, DEG:="NOTDEG"]
+  caseDe[adj.P.Val<0.05, DEG:="DEG"]
+  ctrlDe[adj.P.Val<0.05, DEG:="DEG"]
+  caseDe[logFC<0, LFC:="NEGLFC"]
+  caseDe[logFC>0, LFC:="POSLFC"]
+  ctrlDe[logFC<0, LFC:="NEGLFC"]
+  ctrlDe[logFC>0, LFC:="POSLFC"]
+  casel.m <- as.data.table(rowMeans(vob$E[,lvk]), keep.rownames=T)[,.(gene=V1, LIVPMDE_PD_LV=V2)]
+  casep.m <- as.data.table(rowMeans(vob$E[,pmk]), keep.rownames=T)[,.(gene=V1, LIVPMDE_PD_PM=V2)]
+  ctrll.m <- as.data.table(rowMeans(vob$E[,lvc]), keep.rownames=T)[,.(gene=V1, LIVPMDE_CN_LV=V2)]
+  ctrlp.m <- as.data.table(rowMeans(vob$E[,pmc]), keep.rownames=T)[,.(gene=V1, LIVPMDE_CN_PM=V2)]
+  caseDe <- merge(merge(caseDe, casel.m), casep.m)
+  ctrlDe <- merge(merge(ctrlDe, ctrll.m), ctrlp.m)
+  caseDe[LIVPMDE_PD_LV>LIVPMDE_PD_PM,greaterExpression:="living"]
+  caseDe[LIVPMDE_PD_LV<LIVPMDE_PD_PM,greaterExpression:="postmortem"]
+  ctrlDe[LIVPMDE_CN_LV>LIVPMDE_CN_PM,greaterExpression:="living"]
+  ctrlDe[LIVPMDE_CN_LV<LIVPMDE_CN_PM,greaterExpression:="postmortem"]
+
+# correlate logFC values
+  x1 <- caseDe[,.(gene, logFC.case=logFC)] 
+  x2 <- ctrlDe[,.(gene, logFC.ctrl=logFC)] 
+  mx <- merge(x1, x2)
+  cor.test(mx$logFC.case, mx$logFC.ctrl, method="spearman")$estimate #[1] 0.8688515
+
+# save 
+  saveRDS(list("LIVPMDE_PD"=caseDe, "LIVPMDE_CTRL"=ctrlDe), file="/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_pdctrl_14OCT2021.RDS")
+  
+
+#+END_SRC
+
+
+* Prep Figure Input | Bank
+
+#+BEGIN_SRC R
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+
+# read in lbp data
+  lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  met <- lbp$covariates
+  vob <- lbp$vobjDream
+
+# living samples
+  set.seed(666)
+  liv <- met[mymet_postmortem==0]$SAMPLE_ISMMS
+  lv1 <- sample(liv, round(length(liv)/2,0))
+  lv2 <- liv[!liv %in% lv1]
+
+# postmortem samples
+  har <- met[mymet_postmortem==1 & mymet_bank=="Harvard"]$SAMPLE_ISMMS
+  col <- met[mymet_postmortem==1 & mymet_bank=="Columbia"]$SAMPLE_ISMMS
+
+# counts
+  length(lv1) #[1] 138
+  length(lv2) #[1] 137
+  length(har) #[1] 104
+  length(col) #[1] 126
+
+# update metadata
+  met[,de:="notassigned"]
+  met[SAMPLE_ISMMS %in% lv1, de:="LIVPMDE_HAR_LV"]
+  met[SAMPLE_ISMMS %in% har, de:="LIVPMDE_HAR_PM"]
+  met[SAMPLE_ISMMS %in% lv2, de:="LIVPMDE_COL_LV"]
+  met[SAMPLE_ISMMS %in% col, de:="LIVPMDE_COL_PM"]
+  met[,de:=as.factor(de)]
+  met <- as.data.frame(met)
+  rownames(met) <- met$SAMPLE_ISMMS
+
+# formula
+  form <- ~0 + de + (1|mymet_sex) + mymet_rin + neuronal + RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+
+# sanity check
+  identical(rownames(met), colnames(vob$E)) #[1] TRUE
+
+# contrasts
+  harCon <- getContrast(vob, form, met, c(paste0("de","LIVPMDE_HAR_PM"), paste0("de","LIVPMDE_HAR_LV")))
+  colCon <- getContrast(vob, form, met, c(paste0("de","LIVPMDE_COL_PM"), paste0("de","LIVPMDE_COL_LV")))
+  L <- cbind(harCon,colCon)
+
+# de
+  fitmm <- dream( vob, form, met, L, BPPARAM = MulticoreParam(5))
+
+# format de results
+  harDe <- topTable(fitmm, coef="harCon", number=nrow(vob))
+  colDe <- topTable(fitmm, coef="colCon", number=nrow(vob))
+  harDe <- data.table(gene = rownames(harDe), harDe)[order(logFC)]
+  colDe <- data.table(gene = rownames(colDe), colDe)[order(logFC)]
+  harDe[, DEG:="NOTDEG"]
+  colDe[, DEG:="NOTDEG"]
+  harDe[adj.P.Val<0.05, DEG:="DEG"]
+  colDe[adj.P.Val<0.05, DEG:="DEG"]
+  harDe[logFC<0, LFC:="NEGLFC"]
+  harDe[logFC>0, LFC:="POSLFC"]
+  colDe[logFC<0, LFC:="NEGLFC"]
+  colDe[logFC>0, LFC:="POSLFC"]
+  harl.m <- as.data.table(rowMeans(vob$E[,lv1]), keep.rownames=T)[,.(gene=V1, LIVPMDE_HAR_LV=V2)]
+  harp.m <- as.data.table(rowMeans(vob$E[,har]), keep.rownames=T)[,.(gene=V1, LIVPMDE_HAR_PM=V2)]
+  coll.m <- as.data.table(rowMeans(vob$E[,lv2]), keep.rownames=T)[,.(gene=V1, LIVPMDE_COL_LV=V2)]
+  colp.m <- as.data.table(rowMeans(vob$E[,col]), keep.rownames=T)[,.(gene=V1, LIVPMDE_COL_PM=V2)]
+  harDe <- merge(merge(harDe, harl.m), harp.m)
+  colDe <- merge(merge(colDe, coll.m), colp.m)
+  harDe[LIVPMDE_HAR_LV>LIVPMDE_HAR_PM,greaterExpression:="living"]
+  harDe[LIVPMDE_HAR_LV<LIVPMDE_HAR_PM,greaterExpression:="postmortem"]
+  colDe[LIVPMDE_COL_LV>LIVPMDE_COL_PM,greaterExpression:="living"]
+  colDe[LIVPMDE_COL_LV<LIVPMDE_COL_PM,greaterExpression:="postmortem"]
+
+# correlate logFC values
+  x1 <- harDe[,.(gene, logFC.har=logFC)] 
+  x2 <- colDe[,.(gene, logFC.col=logFC)] 
+  mx <- merge(x1, x2)
+  cor.test(mx$logFC.har, mx$logFC.col, method="spearman")$estimate #[1] 0.9440758
+
+# save 
+  saveRDS(list("LIVPMDE_HAR"=harDe, "LIVPMDE_COL"=colDe), file="/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_bank_14OCT2021.RDS")
+  
+#+END_SRC
+
+
+* Make Figure 
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(ggplot2)
+  library(ggthemes)
+  library(ggrepel)
+  library(ggpubr)
+  library(scales)
+  library(rlang)
+  library(assertthat)
+  library(dplyr)
+  library(magrittr)
+  library(stringr)
+  library(grid) 
+  library(gridExtra)
+  library(egg)
+  library(cowplot)
+  library(patchwork)
+
+# lbp degs
+  lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")$livpmDE
+  lbp[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+  lbp.slim <- lbp[,.(gene, lbp = logFC)]
+
+# waves
+  mypca <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_w1w2_14OCT2021.RDS")$dt
+  mypob <- summary(readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_w1w2_14OCT2021.RDS")$pcObj)
+  mypob <- melt(as.data.table(mypob$importance, keep.rownames=TRUE))
+  mypca[,PlotGroup:="Living"]
+  mypca[mymet_postmortem==1,PlotGroup:="Postmortem"]
+  r3a <- summary(lm( mymet_postmortem ~ PC1 + mymet_sex + mymet_rin + mymet_phe, data=mypca))
+  r3x <- summary(lm( mymet_postmortem ~ mymet_sex + mymet_rin + mymet_phe, data=mypca))
+  r3a$r.squared - r3x$r.squared #[1] 0.5705735
+  r3a$coefficients["PC1","Pr(>|t|)"] #[1] 7.379764e-93
+  pc1pct <- paste0("PC1 (", round(mypob[rn=="Proportion of Variance" & variable=="PC1"]$value*100, 0), "%)") 
+  pc2pct <- paste0("PC2 (", round(mypob[rn=="Proportion of Variance" & variable=="PC2"]$value*100, 0), "%)") 
+
+w12 <- ggscatter(mypca, x = "PC1", y = "PC2", size=3, color = "PlotGroup", alpha=0.3, 
+            palette = c("#2cace2", "#d80f8c"), xlab=pc1pct, ylab=pc2pct) + geom_rug(sides="b", aes(col=PlotGroup))
+##      ggdensity(mypca, x = "PC1",
+ #                  add = "mean", rug = TRUE,
+ #                  color = "PlotGroup", fill = "PlotGroup",
+  #                 palette = c("#2cace2", "#d80f8c")) + geom_point(aes(x=PC1, y=PC2, color=PlotGroup), size=3, alpha=0.3)
+
+# pd results
+  mypdx <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_pdctrl_14OCT2021.RDS")
+  mypd2 <- merge(mypdx$LIVPMDE_PD[,.(gene, logFC1=logFC)], mypdx$LIVPMDE_CTRL[,.(gene, logFC2=logFC)])[,.(gene,comparison="PD only vs nonPD only", mycolor="PD", logFC1, logFC2)] 
+
+# pmi results
+  mypmi <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_diffpmi_02OCT2021.RDS")
+  mypm2 <- merge(mypmi$har_livpm_lopmi[,.(gene, logFC1=logFC)], mypmi$har_livpm_hipmi[,.(gene, logFC2=logFC)])[,.(gene,comparison="Low PMI vs High PMI", mycolor="HBB", logFC1, logFC2)]
+  mypm3 <- merge(mypmi$col_livpm_lopmi[,.(gene, logFC1=logFC)], mypmi$col_livpm_hipmi[,.(gene, logFC2=logFC)])[,.(gene,comparison="Low PMI vs High PMI", mycolor="NYBB", logFC1, logFC2)]
+
+# pm bank results 
+  mybnk <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_livpm_bank_14OCT2021.RDS")
+  mybk2 <- merge(mybnk$LIVPMDE_HAR[,.(gene, logFC1=logFC)], mybnk$LIVPMDE_COL[,.(gene, logFC2=logFC)])[,.(gene,comparison="Harvard vs. Columbia", mycolor="BANK", logFC1, logFC2)] 
+  
+# plot
+  pdat1 <- rbind(mypd2,mybk2)
+  pdat2 <- rbind(mypm2,mypm3)
+  oth1 <- ggscatter(pdat1, x = "logFC1", y = "logFC2", shape=21,
+            add = "reg.line",
+            conf.int = TRUE,  facet.by = "comparison",
+            color = "mycolor") 
+  oth2 <- ggscatter(pdat2, x = "logFC1", y = "logFC2", shape=21,
+            add = "reg.line",
+            conf.int = TRUE,
+            color = "mycolor") + facet_wrap(~mycolor, nrow=2)
+
+w12 / (oth1 | oth2)
+
+#+END_SRC
+ 
