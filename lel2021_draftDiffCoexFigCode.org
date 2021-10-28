@@ -106,7 +106,7 @@
   library(seriation)
   library(gridExtra)
   library(grid)
-  library(cowplot)
+  library(patchwork)
   source("/sc/arion/projects/psychgen/lbp/scripts/lel2021_FigureFunctions.r") 
 
 # read in lbp data
