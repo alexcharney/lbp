@@ -1,0 +1,306 @@
+
+* Make differential correlation barplot (ie "the deciles")
+
+#+NAME: DONE_differential_correlation_barplot
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  setwd("/sc/arion/projects/psychgen/lbp/scratch/lel2021_livpm_corrMatrixDifferences/in")
+
+# read in lbp data
+  ##lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  lbp <- readRDS("/sc/arion/projects/psychgen2/lbp/data/RAW/rna/bulk/fromSema4/CompiledData/lbp_allBatches_RAPiD_Covs-featureCounts-vobjDream-Resids-LivPmDE_FINALModel_onlyBRAIN_518Samples_Excluding-Outliers-MislabeledSamples-BadSamples_19JUL2021.RDS")
+
+# list living and pm degs
+  lvDeg <- lbp$livpmDE[DEG=="DEG" & LFC=="NEGLFC"]$gene
+  pmDeg <- lbp$livpmDE[DEG=="DEG" & LFC=="POSLFC"]$gene
+  noDeg <- lbp$livpmDE[DEG=="NOTDEG"]$gene
+  length(lvDeg) #[1] 9198
+  length(pmDeg) #[1] 7988
+  length(noDeg) #[1] 4449
+
+# list living and pm samples
+  lvSam <- lbp$covariates[mymet_postmortem==0]$SAMPLE_ISMMS
+  pmSam <- lbp$covariates[mymet_postmortem==1]$SAMPLE_ISMMS
+  length(lvSam) #[1] 275
+  length(pmSam) #[1] 243
+
+# calculate gene-gene correlations separately in living and pm samples
+  lvCmx <- cor(t(lbp$residuals[,lvSam]))
+  pmCmx <- cor(t(lbp$residuals[,pmSam]))
+  identical(colnames(lvCmx), colnames(pmCmx)) #[1] TRUE ... good, just a sanity check before comparing these to each other
+
+# calculate the "differential correlation" matrix (ie, the differences between the living and pm gene-gene correlation matrices)
+  dfCmx <- pmCmx - lvCmx
+  dim(dfCmx) #[1] 21635 21635 ... 21635*21635 = 468073225 ... just keeping track of what we are dealing with here
+  sum(is.na(dfCmx)) #[1] 0 ... good, sanity check there are no NAs for any reason in this matrix
+
+# determine if the LBP DEGs influence the differential correlation matrix structure
+
+  ## formatting: make the lower half of the differential correlation matrix NA
+  dfCmx[lower.tri(dfCmx)] <- NA
+  dim(dfCmx) #[1] 21635 21635
+  sum(is.na(dfCmx)) #[1] 234025795 ... number of cells made NA by lower.tri
+    ### some sanity checks to see what lower.tri does with the diagnonal: 
+    ### 21635*21635 = 468073225 ... number of cells in matrix
+    ### 234025795*2 = 468051590 ... if lower.tri made half of matrix NA, this is number of cells in matrix (so this isnt what lower.tri does)
+    ### 468073225 - 468051590 = 21635
+    ###  ... this means that lower.tri does NOT include the diagonal 
+
+  ## melt the differential correlation matrix into a data frame (creates very big R object)
+  dec <- as.data.table(melt(dfCmx))
+  nrow(dec[is.na(value)]) #[1] 234025795 ... sanity check
+  dec <- dec[!is.na(value)]
+  nrow(dec) #[1] 234047430 ... 234047430 - 234025795 = 21635 (because lower.tri does not include diagonal)
+  colnames(dec) <- c("gene1", "gene2", "DIFF")
+  dec <- dec[gene1!=gene2] # remove diagonal
+  nrow(dec) #[1] 234025795 ... good, logic checks out (we expect half the matrix minus the diagonal to be here still (468073225 - 21635)/2 = 234,025,795)
+
+  ## remove big stuff from R environment we wont use anymore (memory issues could arise otherwise)
+  rm(list=c("lvCmx", "pmCmx", "dfCmx"))
+
+  ## order data frame by absolute values of correlations (needed for next step)
+  dec <- dec[order(abs(DIFF))]
+
+  ## bin absolute values of the correlations into deciles
+  dec[,DIFFDECILE := floor(1 + 10 * (.I-1) / .N)]
+
+  ## count number of LBP DEGs in each gene-gene pair
+  dec[,NDEG:=0]
+  dec[gene1 %in% c(lvDeg,pmDeg) & gene2 %in% c(lvDeg,pmDeg), NDEG:=2]
+  dec[gene1 %in% c(lvDeg,pmDeg) & !gene2 %in% c(lvDeg,pmDeg), NDEG:=1]
+  dec[!gene1 %in% c(lvDeg,pmDeg) & gene2 %in% c(lvDeg,pmDeg), NDEG:=1]
+
+# plot
+  plotdata <- dec[,.N,list(DIFFDECILE, NDEG)]
+  plotdata2 <- dec[,.N,list(DIFFDECILE)][,.(DIFFDECILE, DENOM=N)]
+  plotdata <- merge(plotdata, plotdata2)
+  plotdata[,PCT:=N/DENOM]
+  plotdata[,DIFFDECILEORD:=ordered(DIFFDECILE)]
+  p1 <- ggplot(plotdata[NDEG==2], aes(as.factor(DIFFDECILE), PCT)) + 
+         geom_col() + 
+         theme_base() + 
+         coord_cartesian(ylim=c(0.6, 0.7)) + 
+         ylab("Percent DEG Pairs") + xlab("Differential Coexpression Decile")
+  pdf("~/www/figures/lbp/lel2021_PRODUCTION/DECILES.pdf")
+      show(p1)
+  dev.off()
+
+#+END_SRC
+
+
+* Living/postmortem module conservation figure
+
+#+NAME: _cen_conservation
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(seriation)
+  library(gridExtra)
+  library(grid)
+  library(cowplot)
+  source("/sc/arion/projects/psychgen/lbp/scripts/lel2021_FigureFunctions.r") 
+
+# read in lbp data
+  ##lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  lbp <- readRDS("/sc/arion/projects/psychgen2/lbp/data/RAW/rna/bulk/fromSema4/CompiledData/lbp_allBatches_RAPiD_Covs-featureCounts-vobjDream-Resids-LivPmDE_FINALModel_onlyBRAIN_518Samples_Excluding-Outliers-MislabeledSamples-BadSamples_19JUL2021.RDS")
+
+# coexpression data
+  ##cenList <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/cen/cen_subsets.RDS")
+  ##cenFish <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/cen/cen_subsets_overlap.RDS")
+  cenList <- readRDS("/sc/arion/projects/psychgen/lbp/files/files_from_psychgen2/lbp_allBatches_wgcna/lbp_allBatches_RAPiD_FinalModel-NoOutliers_wgcna_geneInfoFiles_separatePDnonPDnetworks_livHarvColumbia_31AUG2021.RDS")
+  cenFish <- readRDS("/sc/arion/projects/psychgen/lbp/files/files_from_psychgen2/lbp_allBatches_wgcna/lbp_allBatches_RAPiD_FinalModel-NoOutliers_wgcna_separatePDnonPDnetworks_livHarvColumbia_pairwiseModuleComparisons_31AUG2021.RDS")
+
+# add liv nonpd (power 7)
+  ##xnames <- load("/sc/arion/work/charna02/symlinks/lbp/liharska2021/cen/raw_cen_data1_livnonpd.Rdata")
+  ##lnames <- load("/sc/arion/work/charna02/symlinks/lbp/liharska2021/cen/raw_cen_data2_livnonpd.Rdata") 
+  xnames <- load("/sc/arion/projects/psychgen/lbp/files/files_from_psychgen2/lbp_allBatches_wgcna/lbp_allBatches_RAPiD_FinalModel-NoOutliers_wgcna_networkConstruction-stepByStep_Power7_PearsonCorr_NoMergedModules_livControlOnly_50Samples_01OCT2021.RData")
+  lnames <- load("/sc/arion/projects/psychgen/lbp/files/files_from_psychgen2/lbp_allBatches_wgcna/lbp_allBatches_RAPiD_FinalModel-NoOutliers_wgcna_datExpr_datTraits_249livControlOnly_01OCT2021.RData")
+  mycen <- data.table( gene=colnames(datExpr), module=moduleColors ) ##?is this right
+  cenList$livNonPD <- mycen
+  newCenFish <- c()
+  for (i in c("harvardControl", "columbiaControl", "harvardPD", "columbiaPD", "livPD")){
+      print(i)
+      add <- fishModSim(cen.list=cenList, cen1=i, cen2="livNonPD")
+      newCenFish <- rbind(newCenFish, add)
+  }
+  newCenFish[cen1!="livPD",color:="dead-liv"]
+  newCenFish[cen1=="livPD",color:="liv-liv"]
+  newCenFish[,comp:=paste(cen1,cen2,sep="-")]
+  newCenFish[,fisher.p.adjust:=p.adjust(fisher.p,"fdr")]
+  cenFish <- rbind(cenFish,newCenFish)
+  ##cenFish <- readRDS("/sc/arion/projects/psychgen/scratch/cen_subsets_overlap_withLivNonpd.RDS")
+
+# some helper objects 
+  cenCombos <- as.data.table(t(combn(names(cenList), 2) ))
+  cenListSize <- lapply(cenList, function(x) x[,.N,module][order(N)]) ##not sure what this is for anymore
+  for (i in 1:length(cenListSize)) cenListSize[[i]][,SIZE := floor( 1 + 2 * (.I-1) / .N)] ##not sure what this is for anymore
+
+# kegg data 
+  keg <- fread("/sc/arion/projects/psychgen/lbp/resources/kegg/hsa00001_noheader_PARSED_MAPPED2ENSEMBL.tsv")
+  keg[,awcid:=paste(TopLevelString,SuperPathwayCode,KoReferencePathwayCode,sep="|")]
+  keg.nogene <- unique(keg[,.(awcid, TopLevelString,SuperPathwayStringA,SuperPathwayStringB,KoReferencePathwayStringA)])
+  kgLst <- split(unique(keg[,.(awcid,gene)]), by="awcid")
+  kgLst <- lapply(kgLst, function(x) x$gene)
+
+# best matches
+  myBest <- c()
+  for (i in 1:nrow(cenCombos)){
+      print(i)
+      c1 <- cenCombos[i]$V1
+      c2 <- cenCombos[i]$V2
+      mod <- list( unique(cenList[[c1]]$module), unique(cenList[[c2]]$module) )
+      names(mod) <- c(c1, c2)
+      for (j in c(c1, c2)){
+          if (j==c1) other <- c2
+          if (j==c2) other <- c1
+          for (k in mod[[j]]){
+              if (j==c1){
+                  cur <- cenFish[cen1==j & cen2==other & mod1==k][order(fisher.p)][1]
+                  idx.cen <- j
+                  com.cen <- other
+                  idx.mod <- k
+                  com.mod <- cur$mod2
+                  idx.mod.size <- cur$mod1.size
+                  com.mod.size <- cur$mod2.size
+              } else {
+                  cur <- cenFish[cen2==j & cen1==other & mod2==k][order(fisher.p)][1]
+                  idx.cen <- j
+                  com.cen <- other
+                  idx.mod <- k
+                  com.mod <- cur$mod1
+                  idx.mod.size <- cur$mod2.size
+                  com.mod.size <- cur$mod1.size
+              }
+              add <- data.table( indexCEN=idx.cen, compareCEN=com.cen,
+                                indexMod=idx.mod, compareMod=com.mod,
+                                indexModSize=idx.mod.size, compareModSize=com.mod.size,
+                                fisher.estimate=cur$fisher.estimate, fisher.p=cur$fisher.p, fisher.p.adjust=cur$fisher.p.adjust )
+              myBest <- rbind(myBest, add)                       
+          }            
+      }
+  }
+  myBest[grep("har", indexCEN),indexBank:="HVD"]
+  myBest[grep("col", indexCEN),indexBank:="CBA"]
+  myBest[grep("liv", indexCEN),indexBank:="LBP"]
+  myBest[grep("har", compareCEN),compareBank:="HVD"]
+  myBest[grep("col", compareCEN),compareBank:="CBA"]
+  myBest[grep("liv", compareCEN),compareBank:="LBP"]
+  myBest[grep("Control", indexCEN),indexPhe:="CON"]
+  myBest[grep("Control", compareCEN),comparePhe:="CON"]
+  myBest[grep("PD", indexCEN),indexPhe:="PD"]
+  myBest[grep("PD", compareCEN),comparePhe:="PD"]
+  myBest[grep("NonPD", indexCEN),indexPhe:="NONPD"]
+  myBest[grep("NonPD", compareCEN),comparePhe:="NONPD"]
+  myBest[ (indexBank=="HVD" & compareBank=="LBP"), bankPair:="PM-LIV"]
+  myBest[ (indexBank=="LBP" & compareBank=="HVD"), bankPair:="LIV-PM"]
+  myBest[ (indexBank=="CBA" & compareBank=="LBP"), bankPair:="PM-LIV"]
+  myBest[ (indexBank=="LBP" & compareBank=="CBA"), bankPair:="LIV-PM"]
+  myBest[ (indexBank=="HVD" & compareBank=="CBA") | (indexBank=="CBA" & compareBank=="HVD"), bankPair:="PM-PM"]
+  myBest[ (indexBank=="HVD" & compareBank=="HVD") | (indexBank=="CBA" & compareBank=="CBA"), bankPair:="PM-PM"]
+  myBest[ (indexBank=="LBP" & compareBank=="LBP"), bankPair:="LIV-LIV"]
+  myBest[ (indexPhe=="CON" & comparePhe=="CON"), phePair:="CON-CON"]
+  myBest[ (indexPhe=="PD" & comparePhe=="PD"), phePair:="PD-PD"]
+  myBest[ (indexPhe=="PD" & comparePhe=="CON"), phePair:="PD-CON"]
+  myBest[ (indexPhe=="CON" & comparePhe=="PD"), phePair:="CON-PD"]
+  myBest[ (indexPhe=="PD" & comparePhe=="NONPD"), phePair:="PD-NONPD"]
+  myBest[ (indexPhe=="NONPD" & comparePhe=="PD"), phePair:="NONPD-PD"]
+  myBest[ (indexPhe=="CON" & comparePhe=="NONPD"), phePair:="CON-NONPD"]
+  myBest[ (indexPhe=="NONPD" & comparePhe=="CON"), phePair:="NONPD-CON"]
+
+# identify conserved modules
+  allall <- c("livPD","livNonPD","columbiaPD","harvardPD","columbiaControl", "harvardControl")
+  ##allal2 <- c("livPD","columbiaPD","harvardPD","columbiaControl", "harvardControl")
+  nogrey <- myBest[indexMod!="grey" & compareMod!="grey"]
+  x1 <- findConsensusModules( stats = nogrey, nets = allall, refnet =  allall[1], cenlist = cenList)
+  conmod <- x1$meta
+
+# enrichment of conserved modules for lbp deg
+  lvDeg <- lbp$livpmDE[DEG=="DEG" & LFC=="NEGLFC"]$gene  
+  pmDeg <- lbp$livpmDE[DEG=="DEG" & LFC=="POSLFC"]$gene
+  bb <- lbp$livpmDE[,.(gene, module=0, lv=0, pm=0)]
+  bb[gene %in% lvDeg, lv:=1]
+  bb[gene %in% pmDeg, pm:=1]
+  bb[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+  degEnrich <- c()
+  for (i in 1:nrow(conmod)){
+      for (j in 1:ncol(conmod)){
+          cur <- copy(bb)
+          net <- colnames(conmod)[j]
+          mod <- conmod[[net]][i]
+          mdg <- cenList[[net]][module==mod]$gene
+          mdg <- tstrsplit(mdg, ".", fixed=T, keep=1L)[[1]]
+          cur[gene %in% mdg, module:=1]
+          fish1 <- fisher.test(table(cur$module, cur$lv), alternative="greater")
+          fish2 <- fisher.test(table(cur$module, cur$pm), alternative="greater")
+          add <- data.table( "conservedMod"=i, "indexCEN"=net, "indexMod"=mod, 
+                            "indexPmOverlap"=length(intersect(mdg, pmDeg)), 
+                            "indexLvOverlap"=length(intersect(mdg, lvDeg)), 
+                            "indexLvEstimate"=fish1$estimate, "indexLvPval"=fish1$p.value,
+                            "indexPmEstimate"=fish2$estimate, "indexPmPval"=fish2$p.value )
+          cr2 <- cur[,.(gene, deg=module)]
+          x <- runKegg(cr2, mod, kgLst)
+          x <- merge(x, keg.nogene) 
+          x <- x[TopLevelString!="Human"]
+          x[,padj:=p.adjust(pval, "fdr")]
+          nsig <- nrow(x[padj<0.05])
+          if (nsig > 0){
+              mostsig <- x[order(padj)][1]
+              mostsig[is.na(SuperPathwayStringB),parent:=SuperPathwayStringA]
+              mostsig[!is.na(SuperPathwayStringB),parent:=paste(SuperPathwayStringA, SuperPathwayStringB, sep=": ")]
+              kgAdd <- mostsig[,.(kegTerm=KoReferencePathwayStringA, kegParent=parent, kegOR=or, kegPADJ=padj)]
+          } else {
+              kgAdd <- mostsig[,.(kegTerm=NA, kegParent=NA, kegOR=NA, kegPADJ=NA)]
+          }
+          add <- cbind(add, kgAdd)
+          degEnrich <- rbind(degEnrich, add)
+      }
+  }
+  degEnrich[,indexLvPvalAdj:=p.adjust(indexLvPval, "fdr")]
+  degEnrich[,indexPmPvalAdj:=p.adjust(indexPmPval, "fdr")]
+  degEnrich[,conservedMod:=paste0("module",conservedMod)]
+  degEnrich[,livSig:=FALSE]
+  degEnrich[,pmSig:=FALSE]
+  degEnrich[indexLvPvalAdj<0.05,livSig:=TRUE]
+  degEnrich[indexPmPvalAdj<0.05,pmSig:=TRUE]
+
+# conserved module deg enrichment figure
+  lvMod <- degEnrich[livSig==TRUE,.N,conservedMod][N>=3]$conservedMod
+  pmMod <- degEnrich[pmSig==TRUE,.N,conservedMod][N>=3]$conservedMod
+  noMod <- unique(degEnrich$conservedMod)[!unique(degEnrich$conservedMod) %in% c(lvMod,pmMod)]
+  lvVal <- degEnrich[conservedMod %in% lvMod,list(or=max(indexLvEstimate)),by=list(conservedMod)]
+  pmVal <- degEnrich[conservedMod %in% pmMod,list(or=max(indexPmEstimate)),by=list(conservedMod)]
+  noVal <- degEnrich[conservedMod %in% noMod,list(or=max(indexPmEstimate)),by=list(conservedMod)]
+  pmVal[,or:=-or]
+  noVal[,or:=0]
+  myOrd <- rbind(lvVal, pmVal, noVal)[order(or, decreasing=T)]$conservedMod
+  degEnrich[,conservedMod:=factor(conservedMod, levels=myOrd)]
+  degEnrich <- degEnrich[order(conservedMod)]
+  degEnrich <- merge(degEnrich, data.table(conservedMod=myOrd, module=1:length(myOrd))) 
+  degEnrich <- degEnrich[order(module)]
+  xy1 <- degEnrich[(indexPmPvalAdj<0.05 | indexLvPvalAdj<0.05) & indexPmPvalAdj<indexLvPvalAdj, .(module, indexCEN, or=indexPmEstimate, p=indexPmPvalAdj, group="pm")]
+  xy2 <- degEnrich[(indexPmPvalAdj<0.05 | indexLvPvalAdj<0.05) & indexLvPvalAdj<indexPmPvalAdj, .(module, indexCEN, or=indexLvEstimate, p=indexLvPvalAdj, group="lv")]
+  xy3 <- degEnrich[(indexPmPvalAdj>0.05 & indexLvPvalAdj>0.05) , .(module, indexCEN, or=indexLvEstimate, p=indexLvPvalAdj, group="insig")]
+  xy <- rbind(xy1, xy2, xy3) 
+  colOrd <- c("columbiaControl", "columbiaPD", "harvardControl", "harvardPD", "livNonPD", "livPD")
+  xy[,indexCEN:=factor(indexCEN, colOrd)]
+  xz <- degEnrich[, .(module, indexCEN, or=kegOR, p=kegPADJ, kegTerm)]
+  colOrd <- c("columbiaControl", "columbiaPD", "harvardControl", "harvardPD", "livNonPD", "livPD")
+  xz[,indexCEN:=factor(indexCEN, colOrd)]
+  keepme <- xy[group!="insig",.N,module]$module
+  xy <- xy[module %in% keepme]
+  xz <- xz[module %in% keepme]
+  p1=ggplot(xy, aes(or, as.factor(rev(module)), group=indexCEN, alpha=group)) + geom_bar(fill="#2cace2", col="black",stat="identity", position="dodge") + theme_base()
+  p2=ggplot(xz, aes(or, as.factor(rev(module)), group=indexCEN, fill=kegTerm)) + geom_bar(col="black",stat="identity", position="dodge") + theme_base()
+  p1 | p2
+
+#+END_SRC
+
