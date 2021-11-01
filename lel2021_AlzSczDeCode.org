@@ -1,0 +1,272 @@
+
+* ALZ1_MSBB
+
+#+NAME: ALZ1_MSBB
+#+BEGIN_SRC R
+##
+## Note on MSBB covariates data:
+##   The path used no longer exists: /hpc/users/beckmn01/AMP-AD/info_all_AMP-AD_corrected_final_redone_best_only.RDS 
+##   However, from code in lbp.org can see that 
+##       a processes/reformatted version of the object previously stored in that path was put in
+##       the mydata object mydata[["covariates"]][["amp"]][["amp|10|PlaqueMean"]] at: 
+##           /sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata
+##   The processing steps were 
+##       - subset for samples in resVP
+##       - column classes were specified as numeric, factor, or character
+##       - kept samples without NA values in PlaqueMean column
+##   Storing that processed table at 
+##       saveRDS(mydata[["covariates"]][["amp"]][["amp|10|PlaqueMean"]], file="/sc/arion/projects/psychgen/lbp/data/rna/alz1_info_all_MSSM.RDS")
+##
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(limma)
+  library(edgeR)
+
+# expression data
+  myexp <- load("/sc/arion/projects/adineto/Noam/residuals/residuals_MSSM_Batch_for_correct_VP_without_outliers_RIN_larger_equal_4_best_only.RData")
+  myexp <- get(myexp)
+
+# covariate data
+  mycov <- readRDS("/sc/arion/projects/psychgen/lbp/data/rna/alz1_info_all_MSSM.RDS")
+  mycov.covlist = c("PlaqueMean", "PMI", "RACE", "correct_SEX", "RIN", "Exonic.Rate")
+  mycov <- mycov[,mycov.covlist]
+  mycov.formula <- as.formula(paste("~",paste(mycov.covlist,collapse="+")))
+
+# match ids
+  myexp <- myexp[,rownames(mycov)]
+  identical(rownames(mycov),colnames(myexp)) #[1] TRUE
+
+# de
+  mydesign <- model.matrix(mycov.formula, mycov)
+  colnames(mydesign) <- make.names(colnames(mydesign))
+  mylmgroup <- lmFit(myexp, mydesign)
+  mylmgroup_DE <- eBayes(mylmgroup)
+  mycoefcol <- which(gregexpr("PlaqueMean", colnames(mydesign))>0)
+  myGroup_DE_tab <- topTable(mylmgroup_DE, coef=mycoefcol, number=nrow(mylmgroup_DE))
+  de <- data.table( gene = rownames(myGroup_DE_tab), myGroup_DE_tab)
+
+# sanity check that this gets you identical result as what is stored in mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  test <- mydata$datasets[["amp|10|PlaqueMean"]]$de$noNEUcorr.noLBPcorr
+  nrow(de) #[1] 24865
+  nrow(test) #[1] 24865
+  test <- merge(de, test, by="gene") 
+  nrow(test) #[1] 24865
+  nrow(test[logFC.x != logFC.y]) #[1] 0
+
+#+END_SRC
+
+
+* ALZ2_ROSMAP
+
+#+NAME: ALZ2_ROSMAP
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(limma)
+  library(edgeR)
+
+# expression data
+  myexp <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/Rosmap/expression/voom_normalized_counts.RDS")
+
+# covariate data
+  mycov <- as.data.table(readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/Rosmap/covariates/info_all.RDS"))
+  mycov.covlist <- c("ceradscBin", "Batch", "RINcontinuous", "RnaSeqMetrics__MEDIAN_5PRIME_TO_3PRIME_BIAS", "msex",
+                     "AlignmentSummaryMetrics__STRAND_BALANCE", "RnaSeqMetrics__PCT_INTRONIC_BASES", "pmi")
+  mycov[ ceradsc=="1", ceradsc:="AD"]
+  mycov[ ceradsc=="2", ceradsc:="ADPROB"]
+  mycov[ ceradsc=="3", ceradsc:="ADPOSS"]
+  mycov[ ceradsc=="4", ceradsc:="Control"]
+  mycov[ ceradsc == "AD", ceradscBin := 1 ]
+  mycov[ ceradsc == "Control", ceradscBin := 0 ]
+  table(mycov$race, mycov$ceradscBin)
+  ##    0   1
+  ##1 162 183
+  ##2   3   3
+  ##3   0   0
+  ##6   0   1
+  mycov <- mycov[race==1] 
+  mykep <- make.names(mycov[!is.na(ceradscBin)]$sample)
+  length(mykep) #[1] 345
+  mycov <- as.data.frame(mycov)
+  rownames(mycov) <- make.names(mycov$sample)
+  mycov <- mycov[mykep,mycov.covlist]
+  mycov.formula <- as.formula(paste("~",paste(mycov.covlist,collapse="+")))
+
+# match ids
+  mykp2 <- intersect(colnames(myexp), rownames(mycov))
+  length(mykp2) #[1] 345
+  identical(mykep, mykp2) #[1] TRUE
+  myexp <- myexp[,mykep]
+  mycov <- mycov[mykep,]
+  identical(rownames(mycov),colnames(myexp)) #[1] TRUE
+
+# de
+  mydesign <- model.matrix(mycov.formula, mycov)
+  colnames(mydesign) <- make.names(colnames(mydesign))
+  length(rownames(mydesign)) #[1] 343
+  dim(myexp) #[1] 19466   345
+  myexp <- myexp[,rownames(mydesign)]
+  dim(myexp) #[1] 19466   343
+  mylmgroup <- lmFit(myexp$E, mydesign)
+  mylmgroup_DE <- eBayes(mylmgroup)
+  mycoefcol <- which(gregexpr("ceradscBin", colnames(mydesign))>0)
+  myGroup_DE_tab <- topTable(mylmgroup_DE, coef=mycoefcol, number=nrow(mylmgroup_DE))
+  de <- data.table( gene = rownames(myGroup_DE_tab), myGroup_DE_tab)
+
+# sanity check that this gets you identical result as what is stored in mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  test <- mydata$datasets[["ros"]]$de$noNEUcorr.noLBPcorr
+  nrow(de) #[1] 19466
+  nrow(test) #[1] 19466
+  test <- merge(de, test, by="gene") 
+  nrow(test) #[1] 19466
+  nrow(test[logFC.x != logFC.y]) #[1] 0
+
+
+
+
+
+#+END_SRC
+
+
+* SCZ1_HBCC
+
+#+NAME: SCZ1_HBCC
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(limma)
+  library(edgeR)
+
+# expression data
+  myexp <- load("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/HBCC_PFC/expression/residualsFlowcellBatch_no_outliers.RData")
+  myvob <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/HBCC_PFC/expression/voom_normalized_counts_no_outliers.RDS")
+  myexp <- get(myexp)
+  colnames(myexp) <- colnames(myvob)
+  rownames(myexp) <- rownames(myvob)
+
+# covariate data
+  mycov <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/HBCC_PFC/covariates/info_all.RDS")
+  mycov[Dx=="Control",scz:=0]
+  mycov[Dx=="SCZ",scz:=1]
+  mycov.covlist = c("scz", "RIN", "IntronicRate", "Gender", "Age_of_Death", "PMI", "GenesDetected", "TotalReads", "IntergenicRate")
+  mycov <- mycov[!is.na(scz)]
+  mykep <- intersect( as.character(mycov$SampleID), colnames(myexp) )
+  mycov <- as.data.frame(mycov)
+  rownames(mycov) <- make.names(mycov$SampleID)
+  mycov <- mycov[mykep,mycov.covlist]
+  mycov.formula <- as.formula(paste("~ ", paste(c("scz", mycov.covlist), collapse = " + ")))
+  length(mykep) #[1] 309
+
+# match ids
+  myexp <- myexp[,mykep]
+  mycov <- mycov[mykep,]
+  identical(rownames(mycov),colnames(myexp)) #[1] TRUE
+
+# de
+  mydesign <- model.matrix(mycov.formula, mycov)
+  colnames(mydesign) <- make.names(colnames(mydesign))
+  length(rownames(mydesign)) #[1] 309
+  dim(myexp) #[1] 22468   309
+  myexp <- myexp[,rownames(mydesign)]
+  dim(myexp) #[1] 22468   309
+  mylmgroup <- lmFit(myexp, mydesign)
+  mylmgroup_DE <- eBayes(mylmgroup)
+  mycoefcol <- which(gregexpr("scz", colnames(mydesign))>0)
+  myGroup_DE_tab <- topTable(mylmgroup_DE, coef=mycoefcol, number=nrow(mylmgroup_DE))
+  de <- data.table( gene = rownames(myGroup_DE_tab), myGroup_DE_tab)
+
+# sanity check that this gets you identical result as what is stored in mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  test <- mydata$datasets[["hbc|pfc|scz"]]$de$noNEUcorr.noLBPcorr
+  nrow(de) #[1] 22468
+  nrow(test) #[1] 22460
+  test <- merge(de, test, by="gene") 
+  nrow(test) #[1] 22460
+  nrow(test[logFC.x != logFC.y]) #[1] 22460
+
+#+END_SRC
+
+
+* SCZ2_CMC
+
+#+NAME: SCZ2_CMC
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(limma)
+  library(edgeR)
+
+# expression data
+  myexp <- load("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_PFC/expression/residualsLibraryBatch_no_outliers.RData")
+  myvob <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_PFC/expression/voom_normalized_counts_no_outliers.RDS")
+  myexp <- get(myexp)
+  colnames(myexp) <- colnames(myvob)
+  rownames(myexp) <- rownames(myvob)
+  dim(myexp) #[1] 22792   516
+
+# covariate data
+  mycov <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_PFC/covariates/info_all.RDS")
+  mycov[Dx=="Control",scz:=0]
+  mycov[Dx=="SCZ",scz:=1]
+  mycov.covlist = c("scz", "BANK", "RIN", "ExonicRate", "IntragenicRate", "GenesDetected", "Gender", "PMI", "Age_of_Death", "MappedReads")
+  mycov <- mycov[!is.na(scz)]
+  mykep <- intersect( as.character(mycov$SampleID), colnames(myexp) )
+  mycov <- as.data.frame(mycov)
+  rownames(mycov) <- make.names(mycov$SampleID)
+  mycov <- mycov[mykep,mycov.covlist]
+  mycov.formula <- as.formula(paste("~ ", paste(c("scz", mycov.covlist), collapse = " + ")))
+  length(mykep) #[1] 474
+
+# cmc and ampad overlaps
+  myraw <- readRDS("/sc/arion/projects/adineto/Noam/AMPAD_all_data/schizo/CMC_PFC/covariates/info_all.RDS")
+  x1 <- "/sc/arion/projects/psychgen/methods/gdde/data/dna/OLD/combined/mer.hg19.sharedsnps.fixed.pr.gtcheck.out.ERR"
+  x2 <- "/sc/arion/projects/psychgen/methods/gdde/data/dna/OLD/combined/mer.hg19.sharedsnps.fixed.pr.gtcheck.out.CN"
+  err <- fread(x1)[,.(id1=V4, id2=V5, err=V2, nsites=V3)]
+  cnn <- fread(x2)[,.(id1=V5, id2=V6, dis=V2, nsites=V3)]
+  mer <- merge(err, cnn)
+  mat <- mer[err<0.2]
+  cmcamp <- unique(gsub("cmc_", "", mat[grep("cmc", id2)]$id2))
+  rmme <-  myraw[Individual_ID %in% cmcamp]$SampleID
+
+# match ids
+  mykep <- mykep[!mykep %in% rmme]  
+  myexp <- myexp[,mykep]
+  mycov <- mycov[mykep,]
+  identical(rownames(mycov),colnames(myexp)) #[1] TRUE
+
+# de
+  mydesign <- model.matrix(mycov.formula, mycov)
+  colnames(mydesign) <- make.names(colnames(mydesign))
+  length(rownames(mydesign)) #[1] 414
+  dim(myexp) #[1] 22792   414
+  myexp <- myexp[,rownames(mydesign)]
+  dim(myexp) #[1] 22792   414
+  mylmgroup <- lmFit(myexp, mydesign)
+  mylmgroup_DE <- eBayes(mylmgroup)
+  mycoefcol <- which(gregexpr("scz", colnames(mydesign))>0)
+  myGroup_DE_tab <- topTable(mylmgroup_DE, coef=mycoefcol, number=nrow(mylmgroup_DE))
+  de <- data.table( gene = rownames(myGroup_DE_tab), myGroup_DE_tab)
+
+# sanity check that this gets you identical result as what is stored in mydata
+  load("/sc/arion/projects/psychgen/lbp/data/rna/lbp_hbc_cmc_amp_exp_and_cov.Rdata") #mydata
+  test <- mydata$datasets[["cmc|pfc|scz"]]$de$noNEUcorr.noLBPcorr
+  nrow(de) #[1] 22792
+  nrow(test) #[1] 22792
+  test <- merge(de, test, by="gene") 
+  nrow(test) #[1] 22792
+  nrow(test[logFC.x != logFC.y]) #[1] 0
+
+#+END_SRC
+
+
+
