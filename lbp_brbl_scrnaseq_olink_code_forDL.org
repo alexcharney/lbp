@@ -1,0 +1,737 @@
+##requirements
+/sc/arion/work/charna02/scripts/lbp/RUN_brbl_scrnaseq_olink_pseudobulk_de_dream_de.r
+
+* Example (for myself) of processing the scRNAseq data from DL
+
+#+NAME: MISC|EXAMPLE_data_processing
+#+BEGIN_SRC R
+#+NAME: MISC|EXAMPLE_data_processing
+
+# setup
+  library(data.table)
+  library(Seurat)
+  library(ggplot2)
+  library(ggthemes)
+  library(SingleCellExperiment)
+
+# data
+  seu <- readRDS("/sc/arion/projects/psychgen/lbp/data/RAW/rna/sc/chromium/narsad/processed_seurat_object/lbp_28samples_seu.RDS")
+  sce <- as.SingleCellExperiment(seu) #Convert to SCE object
+  sce <- prepSCE( sce,
+                 kid = "label1", # subpopulation assignments
+                 gid = "",  # group IDs
+                 sid = "orig.ident",   # sample IDs
+                 drop = FALSE)
+
+# subtype labels
+  sub <- fread("/sc/arion/projects/psychgen/lbp/data/RAW/rna/sc/chromium/narsad/processed_seurat_object/lbp_celltype.tsv")
+  sub[,did:=paste(orig.ident, cell, sep="_")]
+
+# normalized count matrix
+  dim(seu@assays$SCT@data) #[1]  23776 107317
+
+# format metadata in the seu object
+  mymet <- as.data.table(seu@meta.data, keep.rownames="did")
+  mymet[,cid:=tstrsplit(did, split="_", keep=2L)]
+  mymet[,iid:=tstrsplit(orig.ident, split="-", keep=2L)]
+  mymet[,iid:=paste0("PT-0",iid)]
+  mymet[,tissue:=tstrsplit(orig.ident, split="-", keep=3L)]
+  mymet[,timepoint:=tstrsplit(orig.ident, split="-", keep=4L)]
+  mymet[,cellindex:=paste(tissue,cellclass,celltype,cellsubtype,sep="|")]
+  mymet[,sampleindex:=paste(iid,tissue,timepoint,sep="|")]
+
+# sanity checks
+  ncol(seu@assays$SCT@data) #[1] 107317
+  nrow(seu@meta.data) #[1] 107317
+  nrow(mymet) #[1] 107317
+  nrow(sub) #[1] 107327
+  uniqueN(colnames(seu@assays$SCT@data)) #[1] 107317
+  uniqueN(mymet$did) #[1] 107317
+  uniqueN(sub$did) #[1] 107327
+  x <- colnames(seu@assays$SCT@data)
+  y <- mymet$did
+  z <- sub$did
+  length(x[!x %in% y]) #[1] 0
+  length(y[!y %in% z]) #[1] 34 ... cells not in data but not in subtype label file
+  length(z[!z %in% y]) #[1] 44 ... cells not in data but in subtype label file
+
+# merge metadata and subtype labels
+  mymet <- merge(mymet, sub)
+  nrow(mymet) == uniqueN(mymet$did) #[1] TRUE ... sanity check no cells have >1 subtype label, good
+  mymet[,cellclass:=tstrsplit(label1, split="-", keep=1L)]
+  mymet <- mymet[,.( did, cid, iid, tissue, timepoint, cellclass, celltype=label1, cellsubtype=curated_celltype, 
+                    nCount_RNA, nFeature_RNA, percent.mt, percent.ribo, nCount_SCT, nFeature_SCT)]
+  mymet2 <- mymet[cellclass  %in% c("T", "B", "NK", "DC", "Mono")]
+
+# example analysis testing in one sample pair the pairwise cell-cell correlations between:
+  ##Brain-Tcell/Brain-Tcell
+  ##Brain-Tcell/Blood-Tcell
+  ##Brain-Bcell/Brain-Bcell
+  ##Brain-Bcell/Blood-Bcell 
+  ##Brain-Bcell/Brain-Tcell
+  ##Blood-Bcell/Blood-Tcell
+  ##Brain-Bcell/Blood-Tcell 
+  ##Brain-Tcell/Blood-Bcell 
+  i <- "B"
+  j <- "PT-0182 R"
+  i2 <- "T"
+  iBr <- mymet2[cellclass==i & tissue=="brain" & paste(iid, timepoint)==j]$did
+  iBl <- mymet2[cellclass==i & tissue=="blood" & paste(iid, timepoint)==j]$did
+  i2Br <- mymet2[cellclass==i2 & tissue=="brain" & paste(iid, timepoint)==j]$did
+  i2Bl <- mymet2[cellclass==i2 & tissue=="blood" & paste(iid, timepoint)==j]$did
+  matBr <- as.matrix(seu@assays$SCT@data[,iBr])
+  matBl <- as.matrix(seu@assays$SCT@data[,iBl])
+  mat2Br <- as.matrix(seu@assays$SCT@data[,i2Br])
+  mat2Bl <- as.matrix(seu@assays$SCT@data[,i2Bl])
+  keepMe <- merge(merge(merge(
+                as.data.table(rowSums(matBr > 0), keep.rownames=T)[,.(symbol=V1, brain=V2, pctbrain=V2/ncol(matBr))], 
+                as.data.table(rowSums(matBl > 0), keep.rownames=T)[,.(symbol=V1, blood=V2, pctblood=V2/ncol(matBl))]),
+                as.data.table(rowSums(mat2Br > 0), keep.rownames=T)[,.(symbol=V1, brain2=V2, pctbrain2=V2/ncol(mat2Br))]), 
+                as.data.table(rowSums(mat2Bl > 0), keep.rownames=T)[,.(symbol=V1, blood2=V2, pctblood2=V2/ncol(mat2Bl))] )
+  keepMe <- keepMe[pctbrain>0.1|pctblood>0.1|pctbrain2>0.1|pctblood2>0.1]$symbol
+  matBr <- matBr[keepMe,]
+  matBl <- matBl[keepMe,]
+  mat2Br <- mat2Br[keepMe,]
+  mat2Bl <- mat2Bl[keepMe,]
+  corMatBr <- cor(matBr,method="spearman")
+  corMatBl <- cor(matBl,method="spearman")
+  corMat2Br <- cor(mat2Br,method="spearman")
+  corMat2Bl <- cor(mat2Bl,method="spearman")
+  corMatB1b1 <- cor(matBr,matBl,method="spearman")
+  corMatB2b2 <- cor(mat2Br,mat2Bl,method="spearman")
+  corMatB2b1 <- cor(mat2Br,matBl,method="spearman")
+  corMatB1b2 <- cor(matBr,mat2Bl,method="spearman")
+  corMatB1B2 <- cor(matBr,mat2Br,method="spearman")
+  corMatb1b2 <- cor(matBl,mat2Bl,method="spearman")
+  corMatBr[lower.tri(corMatBr)] <- NA
+  corMatBl[lower.tri(corMatBl)] <- NA
+  corMat2Br[lower.tri(corMat2Br)] <- NA
+  corMat2Bl[lower.tri(corMat2Bl)] <- NA
+  corTabBr <- as.data.table(melt(corMatBr))[!is.na(value)][,.(group="br1br1", did1=Var1, did2=Var2, corr=value)][did1!=did2]
+  corTabBl <- as.data.table(melt(corMatBl))[!is.na(value)][,.(group="bl1bl1", did1=Var1, did2=Var2, corr=value)][did1!=did2]
+  corTab2Br <- as.data.table(melt(corMat2Br))[!is.na(value)][,.(group="br2br2", did1=Var1, did2=Var2, corr=value)][did1!=did2]
+  corTab2Bl <- as.data.table(melt(corMat2Bl))[!is.na(value)][,.(group="bl2bl2", did1=Var1, did2=Var2, corr=value)][did1!=did2]
+  corTabB1b1 <- as.data.table(melt(corMatB1b1))[,.(group="br1bl1", did1=Var1, did2=Var2, corr=value)]
+  corTabB2b2 <- as.data.table(melt(corMatB2b2))[,.(group="br2bl2", did1=Var1, did2=Var2, corr=value)]
+  corTabB1b2 <- as.data.table(melt(corMatB1b2))[,.(group="br1bl2", did1=Var1, did2=Var2, corr=value)]
+  corTabB2b1 <- as.data.table(melt(corMatB2b1))[,.(group="br2bl1", did1=Var1, did2=Var2, corr=value)]
+  corTabB1B2 <- as.data.table(melt(corMatB1B2))[,.(group="br1br2", did1=Var1, did2=Var2, corr=value)]
+  corTabb1b2 <- as.data.table(melt(corMatb1b2))[,.(group="bl1bl2", did1=Var1, did2=Var2, corr=value)]
+  corTab <- rbind(corTabBr, corTabBl, corTab2Br, corTab2Bl, corTabB1b1, corTabB2b2, corTabB1B2, corTabb1b2, corTabB1b2, corTabB2b1)
+  corTab[,group:=factor(group, levels=c("br1br1", "bl1bl1", "br1bl1", "br2br2", "bl2bl2", "br2bl2", "br1br2", "bl1bl2", "br1bl2", "br2bl1"))]
+  ggplot(corTab, aes(corr, fill=group)) + geom_density(alpha=0.3) + theme_base() + facet_wrap(~group, ncol=1)
+
+#+END_SRC
+
+
+* Make pseudobulk data from scRNAseq data from DL
+
+#+NAME: OLINK_DE|MAKE_pseudobulk
+#+BEGIN_SRC R
+#+NAME: OLINK_DE|MAKE_pseudobulk
+#
+# R/4.1.0
+#
+# this code block: 
+# - makes pseudobulk data from scRNAseq data from DL
+# - has example of how to process olink data into a useful matrix
+# - makes some helper files that will be used to send jobs to cluster in later code blocks
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  library(Seurat)
+  library(SummarizedExperiment)
+  library(data.table)
+  library(muscat)
+  library(readxl)
+  library(edgeR)
+  library(variancePartition)
+  Sys.setenv(OMP_NUM_THREADS = 6)
+
+# olink data
+  olk <- as.data.table(read_excel("/sc/arion/work/charna02/fromLocal/ALCH01_Inflammation_Plate01_03012022_NPX_AWC.xlsx", sheet="data"))[`Missing Data freq.`==0]
+  olk[,Normalization:=NULL]
+  olk[,`Missing Data freq.`:=NULL]
+  olk[,LOD:=NULL]
+  olk[,PID:=paste(Assay, `Uniprot ID`, OlinkID, sep="|")]
+  olk[,c("Assay", "Uniprot ID", "OlinkID", "P1_HD Pool 1017_1", "P1_HD Pool 1017_2"):=NULL]
+  olk <- as.data.frame(olk)
+  rownames(olk) <- olk$PID
+  olk$PID <- NULL
+  olk <- t(olk)
+  rownames(olk) <- gsub("R", "|R", fixed=T, rownames(olk))
+  rownames(olk) <- gsub("L", "|L", fixed=T, rownames(olk))
+  p <- ggplot( melt(as.data.table(olk)), aes(value)) + geom_histogram(fill="white", col="black") + facet_wrap(~variable, scales="free")
+
+# single cell data
+  seu <- readRDS("/sc/arion/projects/psychgen/lbp/data/RAW/rna/sc/chromium/narsad/processed_seurat_object/lbp_28samples_seu.RDS")
+  sce <- as.SingleCellExperiment(seu) #Convert to SCE object
+  colData(sce)$label1 <- NULL
+  colData(sce)$orig.ident <- NULL
+
+# subtype labels
+  ##sub.raw <- fread("/sc/arion/projects/psychgen/lbp/data/RAW/rna/sc/chromium/narsad/processed_seurat_object/lbp_celltype.tsv")
+  sub.raw <- fread("/sc/arion/projects/psychgen/lbp/data/RAW/rna/sc/chromium/narsad/processed_seurat_object/lbp_celltype_03022022.tsv")
+  sub.raw[,did:=paste(orig.ident, cell, sep="_")]
+  sub <- sub.raw[!is.na(label2)]
+  sub <- sub [ did %in% rownames(colData(sce)) ]
+
+# format metadata in the seu object
+  mymet.raw <- as.data.table(seu@meta.data, keep.rownames="did")
+  mymet <- copy(mymet.raw)
+  mymet <- merge(mymet, sub)
+  nrow(mymet) == uniqueN(mymet$did) #[1] TRUE ... sanity check no cells have >1 subtype label, good
+  mymet[,cid:=tstrsplit(did, split="_", keep=2L)]
+  mymet[,iid:=tstrsplit(orig.ident, split="-", keep=2L)]
+  mymet[,iid:=paste0("PT-0",iid)]
+  mymet[,tissue:=tstrsplit(orig.ident, split="-", keep=3L)]
+  mymet[,timepoint:=tstrsplit(orig.ident, split="-", keep=4L)]
+  mymet[,sampleindex:=paste(iid,tissue,timepoint,sep="|")]
+  mymet[,celltype:=label1]
+  mymet[,cellsubtype:=label2]
+  mymet[,cellclass:=tstrsplit(celltype, split="-", keep=1L)]
+  mymet[,cellindex:=paste(tissue,cellclass,celltype,cellsubtype,sep="|")]
+  mymet <- mymet[,.( did, cid, iid, sampleindex, cellindex, tissue, timepoint, cellclass, celltype, cellsubtype, 
+                    nCount_RNA, nFeature_RNA, percent.mt, percent.ribo, nCount_SCT, nFeature_SCT)]
+
+# sanity checks
+  ncol(seu@assays$SCT@data) #[1] 107317
+  nrow(seu@meta.data) #[1] 107317
+  nrow(mymet.raw) #[1] 107317
+  nrow(sub.raw) #[1] 107327
+  uniqueN(colnames(seu@assays$SCT@data)) #[1] 107317
+  uniqueN(mymet.raw$did) #[1] 107317
+  uniqueN(sub.raw$did) #[1] 107327
+  x <- colnames(seu@assays$SCT@data)
+  y <- mymet.raw$did
+  z <- sub.raw$did
+  length(x[!x %in% y]) #[1] 0
+  length(y[!y %in% z]) #[1] 34 ... cells not in data but not in subtype label file
+  length(z[!z %in% y]) #[1] 44 ... cells not in data but in subtype label file
+
+# subset for shared cells in data and metadata
+  sharedId <- mymet$did
+  sce <- sce[,sharedId]
+  add <- as.data.frame(mymet[,.(cid, iid, tissue, timepoint, cellclass, celltype, cellsubtype)])
+  rownames(add) <- mymet$did
+  add <- add[rownames(colData(sce)),,drop=F]
+  identical(rownames(add), rownames(colData(sce))) #[1] TRUE
+  colData(sce) <- cbind(colData(sce), add)
+  colData(sce)$cellclass_tissue <- paste( sce$cellclass, sce$tissue, sep="|" ) 
+  colData(sce)$cellsubtype_tissue <- paste( sce$cellsubtype, sce$tissue, sep="|" ) 
+  colData(sce)$sid <- paste( sce$iid, sce$tissue, sce$timepoint, sep="|" ) 
+  colData(sce)$cellsubtype_tissue <- gsub("-brain", "", fixed=T, colData(sce)$cellsubtype_tissue)
+  colData(sce)$cellsubtype_tissue <- gsub("-blood", "", fixed=T, colData(sce)$cellsubtype_tissue)
+  dim(sce) #[1]  23776 100663
+
+# create pseudobulk - broad cell class
+  pb1 <- list()
+  pb2 <- list()
+  for (c in unique(sce$cellclass_tissue)){pb1[[c]] <- aggregateData(sce[,sce$cellclass_tissue==c], assay = "counts", fun = "sum", by = c("sid"))}
+  for (c in unique(sce$cellsubtype_tissue)){pb2[[c]] <- aggregateData(sce[,sce$cellsubtype_tissue==c], assay = "counts", fun = "sum", by = c("sid"))}
+
+# save for reading into the version of R that dream works with (R/4.0.3)
+  saveRDS(list(data=pb1, olink=olk), file="/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellType.RDS")
+  saveRDS(list(data=pb2, olink=olk), file="/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellSubType.RDS")
+
+# helper files
+  hp1 <- c()
+  hp2 <- c()
+  for (i in names(pb1)){
+      for (j in colnames(olk)){
+          add <- data.table(cell=i, protein=j)
+          hp1 <- rbind(hp1, add)
+      }
+  }
+  for (i in names(pb2)){
+      for (j in colnames(olk)){
+          add <- data.table(cell=i, protein=j)
+          hp2 <- rbind(hp2, add)
+      }
+  }
+  fwrite(hp1, row=F, col=F, quo=F, sep='\t', file="/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellType_HELPER.tsv")
+  fwrite(hp2, row=F, col=F, quo=F, sep='\t', file="/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellSubType_HELPER.tsv")
+
+#+END_SRC
+
+
+* Run DE on olink variables from the pseudobulk data from scRNAseq data from DL
+
+#+NAME: OLINK_DE|RUN_olink_de_on_pseudobulk
+#+BEGIN_SRC shell
+#+NAME: OLINK_DE|RUN_olink_de_on_pseudobulk
+#
+# This code block: 
+# - Calls a script that will run DE on olink variables from the pseudobulk data from scRNAseq data from DL 
+# - Investigates why certain jobs keep failing when sent to cluster
+# - Combines output of succesful jobs for downstream use
+
+# setup 
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_brbl_scrnaseq_olink_pseudobulk_de_dream_de.r
+  HP1=/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellType_HELPER.tsv
+  HP2=/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellSubType_HELPER.tsv
+  DT1=/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellType.RDS
+  DT2=/sc/arion/projects/psychgen/lbp/data/rna/brbl_scrnaseq_olink_pseudobulk_de_data_CellSubType.RDS
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/brbl_scrnaseq_olink_pseudobulk_de
+  ODR=/sc/arion/projects/psychgen/lbp/results/brbl_scrnaseq_olink_pseudobulk_de
+
+# run - for cell type
+  cd ${SDR}
+  for c in {1..966}
+  do 
+    k=${ODR}/tracker_index_type_${c}
+    mybsub psychgen tracker_index_type_${c} 5000 0:30 premium 6 "Rscript ${RSCRIPT} ${DT1} ${HP1} ${c} ${k}"
+  done
+
+# run - for cell subtype
+  cd ${SDR}
+  for c in {1..1449}
+  do 
+    k=${ODR}/tracker_index_subtype_${c}
+    mybsub psychgen tracker_index_subtype_${c} 5000 0:30 premium 6 "Rscript ${RSCRIPT} ${DT2} ${HP2} ${c} ${k}"
+  done
+
+# check - for cell type
+  cd ${SDR}
+  ls tracker_index_type_*.stdout | sed s/'.stdout'/''/g | sort | uniq > tracker_index_type_sent
+  fgrep -m1 Successfully tracker_index_type_*.stdout | awk -F":" '{print $1}' | sed s/'.stdout'/''/g | sort | uniq > tracker_index_type_success
+  comm -23 tracker_index_type_sent tracker_index_type_success > tracker_index_type_fail
+  echo tracker_index_type_{1..966} | tr ' ' '\n' | sort | uniq > tracker_index_type_all
+  comm -23 tracker_index_type_all tracker_index_type_sent > tracker_index_type_notsent  
+  wc -l tracker_index_type_{sent,success,fail,notsent,all}
+  #966 tracker_index_type_sent
+  #738 tracker_index_type_success
+  #228 tracker_index_type_fail
+  #  0 tracker_index_type_notsent
+  #966 tracker_index_type_all
+
+# check - for cell subtype
+  cd ${SDR}
+  ls tracker_index_subtype_*.stdout | sed s/'.stdout'/''/g | sort | uniq > tracker_index_subtype_sent
+  fgrep -m1 Successfully tracker_index_subtype_*.stdout | awk -F":" '{print $1}' | sed s/'.stdout'/''/g | sort | uniq > tracker_index_subtype_success
+  comm -23 tracker_index_subtype_sent tracker_index_subtype_success > tracker_index_subtype_fail
+  echo tracker_index_subtype_{1..1449} | tr ' ' '\n' | sort | uniq > tracker_index_subtype_all
+  comm -23 tracker_index_subtype_all tracker_index_subtype_sent > tracker_index_subtype_notsent  
+  wc -l tracker_index_subtype_{sent,success,fail,notsent,all}
+  #1449 tracker_index_subtype_sent
+  #1091 tracker_index_subtype_success
+  # 358 tracker_index_subtype_fail
+  #   0 tracker_index_subtype_notsent
+  #1449 tracker_index_subtype_all
+
+# rerun fail - for cell type
+  ## most fails are due to dream socket/connection error and they run fine by just resubmitting
+  cd ${SDR}
+  for c in `cat tracker_index_type_{fail,notsent} | awk -F"_" '{print $NF}'`
+  do 
+    k=${ODR}/tracker_index_type_${c}
+    mybsub psychgen tracker_index_type_${c} 5000 1:00 premium 6 "Rscript ${RSCRIPT} ${DT1} ${HP1} ${c} ${k}"
+  done
+
+# rerun fail - for cell subtype
+  ## most fails are due to dream socket/connection error and they run fine by just resubmitting
+  cd ${SDR}
+  for c in `cat tracker_index_subtype_{fail,notsent} | awk -F"_" '{print $NF}'`
+  do 
+    k=${ODR}/tracker_index_subtype_${c}
+    mybsub psychgen tracker_index_subtype_${c} 5000 1:00 premium 6 "Rscript ${RSCRIPT} ${DT2} ${HP2} ${c} ${k}"
+  done
+
+# for jobs that continuously fail, why? - cell type
+  echo "" | tail -n+2 > tracker_index_type_fail_covarcorr
+  echo "" | tail -n+2 > tracker_index_type_fail_socket
+  echo "" | tail -n+2 > tracker_index_type_fail_smoothspline
+  echo "" | tail -n+2 > tracker_index_type_fail_rankdeficient
+  echo "" | tail -n+2 > tracker_index_type_fail_sigpipe
+  for i in `cat tracker_index_type_fail`
+  do
+    n=`grep -m1 "Covariates in the formula are so strongly correlated" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_type_fail_covarcorr
+    fi
+    n=`grep -m1 "Error in socketConnection" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_type_fail_socket
+    fi
+    n=`grep -m1 "Error in smooth.spline" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_type_fail_smoothspline
+    fi
+    n=`grep -m1 "fixed-effects model matrix is column rank deficient" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_type_fail_rankdeficient
+    fi
+    n=`grep -m1 "ignoring SIGPIPE signal" ${i}.stderr | wc -l` 
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_type_fail_sigpipe
+    fi
+  done
+  wc -l tracker_index_type_fail #228
+  wc -l tracker_index_type_fail_covarcorr #110
+  wc -l tracker_index_type_fail_socket #19
+  wc -l tracker_index_type_fail_smoothspline #27
+  wc -l tracker_index_type_fail_rankdeficient #69
+  wc -l tracker_index_type_fail_sigpipe #3
+  cat tracker_index_type_fail_{covarcorr,socket,smoothspline,rankdeficient,sigpipe} | sort | uniq | comm -23 tracker_index_type_fail - | wc -l #0
+
+# for jobs that continuously fail, why? - cell subtype
+  echo "" | tail -n+2 > tracker_index_subtype_fail_covarcorr
+  echo "" | tail -n+2 > tracker_index_subtype_fail_socket
+  echo "" | tail -n+2 > tracker_index_subtype_fail_smoothspline
+  echo "" | tail -n+2 > tracker_index_subtype_fail_rankdeficient
+  echo "" | tail -n+2 > tracker_index_subtype_fail_sigpipe
+  for i in `cat tracker_index_subtype_fail`
+  do
+    n=`grep -m1 "Covariates in the formula are so strongly correlated" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_subtype_fail_covarcorr
+    fi
+    n=`grep -m1 "Error in socketConnection" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_subtype_fail_socket
+    fi
+    n=`grep -m1 "Error in smooth.spline" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_subtype_fail_smoothspline
+    fi
+    n=`grep -m1 "fixed-effects model matrix is column rank deficient" ${i}.stderr | wc -l`
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_subtype_fail_rankdeficient
+    fi
+    n=`grep -m1 "ignoring SIGPIPE signal" ${i}.stderr | wc -l` 
+    if [[ ${n} -eq 1 ]]
+    then echo ${i} >> tracker_index_subtype_fail_sigpipe
+    fi
+  done
+  wc -l tracker_index_subtype_fail #358
+  wc -l tracker_index_subtype_fail_covarcorr #178
+  wc -l tracker_index_subtype_fail_socket #12
+  wc -l tracker_index_subtype_fail_smoothspline #99
+  wc -l tracker_index_subtype_fail_rankdeficient #69
+  wc -l tracker_index_subtype_fail_sigpipe #0
+  cat tracker_index_subtype_fail_{covarcorr,socket,smoothspline,rankdeficient,sigpipe} | sort | uniq | comm -23 tracker_index_subtype_fail - | wc -l #0
+
+##
+## MOVING ON FOR NOW WITH JOBS THAT FINISHED WITHOUT AN ERROR
+##
+
+# combine pi1 outputs
+  cat ${ODR}/tracker_index_type_*_pi1.tsv > ${ODR}/combined_type_pi1.tsv
+  cat ${ODR}/tracker_index_subtype_*_pi1.tsv > ${ODR}/combined_subtype_pi1.tsv
+
+#+END_SRC
+
+
+* Calculate correlation matrices between brain and blood cell types (uses pseudobulk data)
+
+#+NAME: OLINK_DE|MAKE_correlation_matrices
+#+BEGIN_SRC R
+#+NAME: OLINK_DE|MAKE_correlation_matrices
+#
+# This code block:
+# - makes correlation matrices between pseudobulk data for different brain/blood cell combinations
+# - also makes a helper file to be used later
+
+# setup
+  options(stringsAsFactors=F)
+  suppressMessages(library(Seurat))
+  suppressMessages(library(SummarizedExperiment))
+  suppressMessages(library(SingleCellExperiment))
+  suppressMessages(library(data.table))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(qvalue))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+  setwd("/sc/arion/projects/psychgen/lbp/data/rna/")
+
+# pseudobulk matrices - note: not 100% confident all of these steps are being done right, should go thru code with ryan/lora
+  pb1 <- readRDS("brbl_scrnaseq_olink_pseudobulk_de_data_CellType.RDS")$data
+  pb2 <- readRDS("brbl_scrnaseq_olink_pseudobulk_de_data_CellSubType.RDS")$data
+  p1v <- list()
+  p2v <- list()
+  ##
+  ## make vobjects
+  ##
+  form <- ~ (1|iid)
+  for (i in names(pb1)){
+      tryCatch({
+          print(i)
+          y <- DGEList(assay(pb1[[i]]), samples=colData(pb1[[i]]), remove.zeros=TRUE)
+          y <- calcNormFactors(y, method="TMM")
+          y$samples$iid <- tstrsplit(rownames(y$samples), split="|", fixed=T, keep=1L)[[1]]
+          colnames(y) <- gsub("|brain|", ".", fixed=TRUE, colnames(y))
+          colnames(y) <- gsub("|blood|", ".", fixed=TRUE, colnames(y))
+          keep <- filterByExpr(y, min.count=10)
+          y <- y[keep,]
+          vobjDream <- voomWithDreamWeights(y, form, y$samples, BPPARAM = MulticoreParam(5) )
+          p1v[[i]] <- vobjDream
+      }, error=function(e){cat("MY MESSAGE:",conditionMessage(e), "\n")})
+  }
+  for (i in names(pb2)){
+      tryCatch({
+          print(i)
+          y <- DGEList(assay(pb2[[i]]), samples=colData(pb2[[i]]), remove.zeros=TRUE)
+          y <- calcNormFactors(y, method="TMM")
+          y$samples$iid <- tstrsplit(rownames(y$samples), split="|", fixed=T, keep=1L)[[1]]
+          colnames(y) <- gsub("|brain|", ".", fixed=TRUE, colnames(y))
+          colnames(y) <- gsub("|blood|", ".", fixed=TRUE, colnames(y))
+          keep <- filterByExpr(y, min.count=10)
+          y <- y[keep,]
+          vobjDream <- voomWithDreamWeights(y, form, y$samples, BPPARAM = MulticoreParam(5) )
+          p2v[[i]] <- vobjDream
+      }, error=function(e){cat("MY MESSAGE:",conditionMessage(e), "\n")})
+  }
+  length(pb1) #[1] 14
+  length(p1v) #[1] 13
+  length(pb2) #[1] 21
+  length(p2v) #[1] 20
+  rm(pb1)
+  rm(pb2)
+  ##
+  ## split by brain and blood
+  ##
+  p1v.brnames <- grep("brain", names(p1v), value=T)
+  p1v.blnames <- grep("blood", names(p1v), value=T)
+  p2v.brnames <- grep("brain", names(p2v), value=T)
+  p2v.blnames <- grep("blood", names(p2v), value=T)
+  p1r <- p1v[p1v.brnames]
+  p1l <- p1v[p1v.blnames]
+  p2r <- p2v[p2v.brnames]
+  p2l <- p2v[p2v.blnames]
+  rm(p1v)
+  rm(p2v)
+  names(p1r) <- gsub("|brain", "", fixed=TRUE, names(p1r))
+  names(p1l) <- gsub("|blood", "", fixed=TRUE, names(p1l))
+  names(p2r) <- gsub("|brain", "", fixed=TRUE, names(p2r))
+  names(p2l) <- gsub("|blood", "", fixed=TRUE, names(p2l))
+  names(p1r) <- gsub(" ", "_", fixed=TRUE, names(p1r))
+  names(p1l) <- gsub(" ", "_", fixed=TRUE, names(p1l))
+  names(p2r) <- gsub(" ", "_", fixed=TRUE, names(p2r))
+  names(p2l) <- gsub(" ", "_", fixed=TRUE, names(p2l))
+  names(p2r)[11] <- "Astrocyte" #just standardizing names
+
+# make correlation matrices
+  pairs1 <- as.data.table(expand.grid(names(p1r), names(p1l)))[,.(level="type", brain=as.character(Var1), blood=as.character(Var2))]
+  pairs2 <- as.data.table(expand.grid(names(p2r), names(p2l)))[,.(level="subtype", brain=as.character(Var1), blood=as.character(Var2))]
+  pairs <- rbind(pairs1, pairs2)
+  pairs[,index:=.I]
+  saveRDS(pairs, file="./brbl_scrnaseq_olink_pseudobulk_correlation_matrices/pairs_indices.RDS")
+  for (i in 1:nrow(pairs)){
+      print(i)
+      c1 <- pairs[i]$brain
+      c2 <- pairs[i]$blood
+      lv <- pairs[i]$level
+      ix <- pairs[i]$index
+      if (lv=="type"){
+          d1 <- p1r[[c1]]
+          d2 <- p1l[[c2]]
+      } else {
+          d1 <- p2r[[c1]]
+          d2 <- p2l[[c2]]
+      }
+      kp <- intersect(colnames(d1), colnames(d2))
+      d1 <- d1$E[,kp]
+      d2 <- d2$E[,kp]
+      rownames(d1) <- paste0("brain|",rownames(d1))
+      rownames(d2) <- paste0("blood|",rownames(d2))
+      corBrBl <- cor(t(d1),t(d2))
+      saveRDS(corBrBl, file=paste0("./brbl_scrnaseq_olink_pseudobulk_correlation_matrices/pairs_index_",ix,".RDS"))
+  }
+
+#+END_SRC
+
+
+* Investigate extent to which there is DE signal for olink variables using pi1 statistic
+
+#+NAME: OLINK_DE|EXAMINE_pi1
+#+BEGIN_SRC R
+#+NAME: OLINK_DE|EXAMINE_pi1
+#
+#R version 4.0.3 
+
+# setup
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp")
+
+# files listing jobs that finished without error
+  tr1 <- fread("./scripts/brbl_scrnaseq_olink_pseudobulk_de/tracker_index_type_success", header=F)$V1
+  tr2 <- fread("./scripts/brbl_scrnaseq_olink_pseudobulk_de/tracker_index_subtype_success", header=F)$V1
+  tr1 <- paste0("./results/brbl_scrnaseq_olink_pseudobulk_de/", tr1)
+  tr2 <- paste0("./results/brbl_scrnaseq_olink_pseudobulk_de/", tr2)
+
+# take a look at pi1 values to get a feel for the data
+  pi1res <- c()
+  for (i in tr1){
+      add <- fread(paste0(i,"_pi1.tsv"), sep="\t", header=F)[,.(cell=V1, protein=V2, pi1=V3)]
+      add[,c("cell", "tissue"):=tstrsplit(cell, split="|", fixed=T)]
+      add[,cell:=gsub(" ", "_", fixed=TRUE,cell)]
+      add <- add[,.(tissue, cell, cell_level="type", protein, pi1, path=i)]
+      pi1res <- rbind(pi1res, add)
+  }  
+  for (i in tr2){
+      add <- fread(paste0(i,"_pi1.tsv"), sep="\t", header=F)[,.(cell=V1, protein=V2, pi1=V3)]
+      add[,c("cell", "tissue"):=tstrsplit(cell, split="|", fixed=T)]
+      add[,cell:=gsub(" ", "_", fixed=TRUE,cell)]
+      add <- add[,.(tissue, cell, cell_level="subtype", protein, pi1, path=i)]
+      pi1res <- rbind(pi1res, add)
+  }  
+  pi1res[cell=="Astro", cell:="Astrocyte"]
+  saveRDS(pi1res, file="./results/brbl_scrnaseq_olink_pseudobulk_de/combined_pi1.RDS")
+  pdf("~/www/figures/lbp/brbl_scrnaseq_olink_pseudobulk_de.pdf", w=24, h=12)
+    ggplot(pi1res[cell_level=="type"], aes(pi1, fill=tissue)) + geom_histogram(alpha=0.3) + theme_base()
+    ggplot(pi1res[cell_level=="subtype"], aes(pi1, fill=tissue)) + geom_histogram(alpha=0.3) + theme_base()
+    ggplot(pi1res[cell_level=="type"], aes(pi1, fill=tissue)) + geom_density(alpha=0.3) + theme_base() + facet_wrap(~protein, scales="free_y")
+    ggplot(pi1res[cell_level=="subtype"], aes(pi1, fill=tissue)) + geom_density(alpha=0.3) + theme_base() + facet_wrap(~protein, scales="free_y")
+    ggplot(pi1res[cell_level=="type"], aes(pi1, fill=tissue)) + geom_histogram(alpha=0.3) + theme_base() + facet_wrap(~protein, scales="free_y")
+    ggplot(pi1res[cell_level=="subtype"], aes(pi1, fill=tissue)) + geom_histogram(alpha=0.3) + theme_base() + facet_wrap(~protein, scales="free_y")
+  dev.off()
+  ##
+  ## take-away: lots of signal, can't say much beyond that at this stage, could all be technical noise
+  typeCombos <- merge( pi1[cell_level=="type" & tissue=="brain",.(braincell=cell, brainpi1=pi1, brainpath=path, protein)],
+                      pi1[cell_level=="type" & tissue=="blood",.(bloodcell=cell, bloodpi1=pi1, bloodpath=path, protein)], allow.cartesian=TRUE )
+  subtypeCombos <- merge( pi1[cell_level=="subtype" & tissue=="brain",.(braincell=cell, brainpi1=pi1, brainpath=path, protein)],
+                       pi1[cell_level=="subtype" & tissue=="blood",.(bloodcell=cell, bloodpi1=pi1, bloodpath=path, protein)], allow.cartesian=TRUE )
+  saveRDS(typeCombos, file="./results/brbl_scrnaseq_olink_pseudobulk_de/combined_pi1_typeCombos_n2160.RDS")
+  saveRDS(subtypeCombos, file="./results/brbl_scrnaseq_olink_pseudobulk_de/combined_pi1_typeCombos_n4728.RDS")
+
+
+#+END_SRC
+
+
+* Investigate whether olink protein levels are best associated with their own expression level
+
+#+NAME: OLINK_DE|EXAMINE_are_olink_proteins_best_associated_with_themselves
+#+BEGIN_SRC R
+#+NAME: OLINK_DE|EXAMINE_are_olink_proteins_best_associated_with_themselves
+
+# setup
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp")
+  
+# de data
+  dt <- readRDS("./results/brbl_scrnaseq_olink_pseudobulk_de/combined_pi1.RDS")
+  dt[,path:=paste0(path, "_de.tsv")]
+  dt[,gene:=tstrsplit(protein, split="|", fixed=T, keep=1L)]
+
+# run
+  new <- c()
+  for (i in 1:nrow(dt)){
+      print(i)
+      add <- dt[i]
+      gen <- add$gene
+      cur <- fread(add$path)[order(logFC, decreasing=T)]
+      cur[,rank:=.I]
+      av1 <- nrow(cur)
+      if (gen %in% cur$gene){
+          print(i)
+          av2 <- TRUE
+          av3 <- cur[gene == gen]$rank / nrow(cur)
+          av4 <- cur[gene == gen]$P.Value 
+          av5 <- cur[gene == gen]$adj.P.Val
+          av6 <- cur[gene == gen]$logFC
+      } else {
+          av2 <- FALSE
+          av3 <- NA
+          av4 <- NA
+          av5 <- NA
+          av6 <- NA
+      }
+      add <- data.table(add, olinkMarkerInDe=av2, olinkMarkerRank=av3, olinkMarkerP=av4, olinkMarkerPadj=av5, olinkMarkerLogfc=av6)
+      new <- rbind(new, add)
+   }
+
+#+END_SRC
+
+
+* Miscellaneous
+
+#+NAME: OLINK_DE|MISC
+#+BEGIN_SRC shell
+#+NAME: OLINK_DE|MISC
+
+# setup 
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_brbl_scrnaseq_olink_pseudobulk_CellComparisons.r
+  HP1=/sc/arion/projects/psychgen/lbp/results/brbl_scrnaseq_olink_pseudobulk_de/combined_pi1_typeCombos_n2160.RDS
+  HP2=/sc/arion/projects/psychgen/lbp/results/brbl_scrnaseq_olink_pseudobulk_de/combined_pi1_typeCombos_n4728.RDS
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/brbl_scrnaseq_olink_pseudobulk_de
+  ODR=/sc/arion/projects/psychgen/lbp/results/brbl_scrnaseq_olink_pseudobulk_de
+
+# run - for cell type
+  cd ${SDR}
+  for i in {1..2160}
+  do 
+    k=${ODR}/tracker_index_type_combo_${i}
+    mybsub psychgen `basename ${k}` 5000 0:30 premium 6 "Rscript ${RSCRIPT} ${HP1} ${i} ${k}.RDS type"
+  done
+
+# run - for cell subtype
+  cd ${SDR}
+  for c in {1..4728}
+  do 
+    k=${ODR}/tracker_index_subtype_combo_${i}
+    mybsub psychgen `basename ${k}` 5000 0:30 premium 6 "Rscript ${RSCRIPT} ${HP2} ${i} ${k}.RDS subtype"
+  done
+
+# check - for cell type 
+  cd ${SDR}
+  ls tracker_index_type_combo_*.stdout | sed s/'.stdout'/''/g | sort | uniq > tracker_index_type_combo_sent
+  fgrep -m1 Successfully tracker_index_type_combo_*.stdout | awk -F":" '{print $1}' | sed s/'.stdout'/''/g | sort | uniq > tracker_index_type_combo_success
+  comm -23 tracker_index_type_combo_sent tracker_index_type_combo_success > tracker_index_type_combo_fail
+  echo tracker_index_type_combo_{1..2160} | tr ' ' '\n' | sort | uniq > tracker_index_type_combo_all
+  comm -23 tracker_index_type_combo_all tracker_index_type_combo_sent > tracker_index_type_combo_notsent  
+  wc -l tracker_index_type_combo_{sent,success,fail,notsent,all}
+  #2095 tracker_index_type_combo_sent
+  #2095 tracker_index_type_combo_success
+  #   0 tracker_index_type_combo_fail
+  #  65 tracker_index_type_combo_notsent
+  #2160 tracker_index_type_combo_all
+
+
+#+END_SRC
+#+BEGIN_SRC R
+
+# setup
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/brbl_scrnaseq_olink_pseudobulk_de")
+
+# files 
+  lst <- Sys.glob("tracker_index_type_combo*.RDS")
+
+# results
+  res <- c()
+  for (i in lst){
+      res <- rbind(res, readRDS(i))
+  }  
+
+# sae vs diff gene corr
+  xxx <- unique(rbind(res[,.(braincell,bloodcell,category="brblcorrSameGene",value=brblcorrSameGene)],
+                      res[,.(braincell,bloodcell,category="brblcorrDiffGene",value=brblcorrDiffGene)],
+                      res[,.(braincell,bloodcell,category="absbrblcorrSameGene",value=absbrblcorrSameGene)],
+                      res[,.(braincell,bloodcell,category="absbrblcorrDiffGene",value=absbrblcorrDiffGene)]))
+  ggplot(xxx, aes(value)) + geom_histogram(col="black",fill="white") + facet_wrap(~category,ncol=1) + theme_base()
+
+
+  pdf("~/www/figures/lbp/brbl_scrnaseq_olink_pseudobulk_de.pdf", w=24, h=12)
+    ggplot(pi1res[cell_level=="type"], aes(pi1, fill=tissue)) + geom_histogram(alpha=0.3) + theme_base()
+    ggplot(pi1res[cell_level=="subtype"], aes(pi1, fill=tissue)) + geom_histogram(alpha=0.3) + theme_base()
+  dev.off()
+
+
+#+END_SRC
+
+
