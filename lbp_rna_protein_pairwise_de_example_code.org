@@ -1,0 +1,32 @@
+
+* Run DE of every protein in mass spec data against all genes in RNAseq data
+
+
+#+NAME: WIP|de_of_protein_levels_for_rnaseq
+#+BEGIN_SRC shell
+
+# setup 
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_bulk_protein_rna_pairwise_dream_de.r
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/rna_protein_de
+  ODR=/sc/arion/projects/psychgen/lbp/results/rna_protein_de
+
+# run
+  cd ${SDR}
+  for i in {1..6415} #change to reflect number proteins in matrix
+  do 
+    mybsub psychgen index${i} 5000 1:30 premium 6 "Rscript ${RSCRIPT} ${i}"
+  done
+
+# check
+  cd ${SDR}
+  ls index*.stdout | sed s/'.stdout'/''/g | sort | uniq > sent
+  fgrep -m1 Successfully index*.stdout | awk -F":" '{print $1}' | sed s/'.stdout'/''/g | sort | uniq > success
+  comm -23 sent success > fail
+  echo index{1..966} | tr ' ' '\n' | sort | uniq > all
+  comm -23 all sent > notsent  
+  wc -l all sent notsent success fail
+
+#+END_SRC
+
+
