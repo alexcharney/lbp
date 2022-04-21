@@ -1,0 +1,725 @@
+* STEP 1 - WGS DATA PREPARATION | README
+
+#+NAME: readme
+#+BEGIN_SRC 
+
+What WGS variants are we starting from?
+1. fastq (from VUMC)
+2. alignment (hardik - dragen)
+4. variant calls -> gvcfs (hardik - dragen)
+3. joint calling (alex - gatk)
+4. contamination check (alex - VerifyBamID)
+5. vqsr filter (alex - gatk ApplVQSR, GenoTypeRefinement, SelectVariants)
+6. custom filters:
+   (a) Remove - Variants in joint-called vcf where AC is 0 before GenotypeRefinement (GR) step [257532]
+   (b) Remove - Variants in joint-called vcf where AC is 0 after GR step [3928392]
+   (c) Remove - Variants that SelectVariants sets AC/AF/AN to missing for unclear reasons [70205]
+   (d) Remove - 150-ish instances of multiallelics where diff AN for diff rows
+   (e) Remove - Variants with a "missingness" >5% after GenotypeRefinement (this seems like reasonable cutoff based on our data and gnomad)
+   (5) Keep - our "clean" filter (biallelic snvs only)
+
+#+END_SRC
+
+
+* STEP 1 - WGS DATA PREPARATION | list individuals in LIV-PM RNAseq paper
+
+#+BEGIN_SRC R
+## This code block is just to make a list of the indivuals in the RNAseq data in Lora's LIV-PM paper
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp/files")
+
+# data
+  rna <- "/sc/arion/projects/psychgen2/lbp/data/RAW/rna/bulk/fromSema4/CompiledData/lbp_allBatches_RAPiD_Covs-featureCounts-vobjDream-Resids-LivPmDE_FINALModel_onlyBRAIN_518Samples_Excluding-Outliers-MislabeledSamples-BadSamples_19JUL2021.RDS"
+  lbp <- readRDS(rna)
+  
+# write
+  fout <- "lel2021_n412_individuals_postqc.tsv"
+  dout <- unique(lbp$covariates[,.(FID=IID_ISMMS, IID=IID_ISMMS, mymet_postmortem)])
+  dout[,FID:=gsub("_", "-", FID)] #to match WGS IDs ... not clear why for these 15-ish sometimes its hyphens and sometimes underscores but kill me
+  dout[,IID:=gsub("_", "-", IID)]
+  fwrite(dout, sep='\t', row=F, col=T, quo=F, file=fout)
+
+#+END_SRC
+
+
+* STEP 1 - WGS DATA PREPARATION | filter/format WGS data for QTL analyses
+
+#+NAME: PREP_wgs_data_for_eqtl_analysis
+#+BEGIN_SRC shell
+## This code block applies some basic formatting/filtering to the WGS data so it can be used in QTL pipeline
+
+# setup
+  ml bcftools tabix plink
+  DIR=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement
+  CTM=/sc/arion/projects/psychgen/lbp/data/dna/wgs_VerifyBamID/combined_alpha.out
+  SCR=/sc/arion/projects/psychgen/lbp/scratch
+  RID=/sc/arion/projects/psychgen/lbp/files/lel2021_n412_individuals_postqc.tsv
+
+# STEP1: convert to plink
+  cd ${DIR}
+  for i in {1,2,3,4,5,6,7,8,9,10,1{1..9},20,21,22,X,Y}  
+  do 
+    PFX=${DIR}/lbp_wgs.chr${i}.vqsr_pipeline/strictAnnoFiltPass
+    INP=${PFX}.vcf.gz
+    plink --vcf ${INP} --make-bed --out ${PFX} --set-missing-var-ids @:#[b38]\$1,\$2
+  done
+
+# STEP2: remove contaminated samples
+  cd ${DIR}
+  awk -v OFS='\t' 'NR>1 && $2>0.02 {print $1, $1}' ${CTM} > ${SCR}/contaminated_samples
+  cat ${SCR}/contaminated_samples | wc -l  #49
+  for i in {1,2,3,4,5,6,7,8,9,10,1{1..9},20,21,22,X,Y}  
+  do 
+    I=${DIR}/lbp_wgs.chr${i}.vqsr_pipeline/strictAnnoFiltPass
+    O=${DIR}/lbp_wgs.chr${i}.vqsr_pipeline/strictAnnoFiltPass_exclude49contam
+    plink --bfile ${I} --remove ${SCR}/contaminated_samples --make-bed --out ${O}
+  done
+
+# STEP3: keep samples in the bulk rnaseq liv-pm paper postqc
+  cd ${DIR}
+  for i in {1,2,3,4,5,6,7,8,9,10,1{1..9},20,21,22,X,Y}  
+  do 
+    I=${DIR}/lbp_wgs.chr${i}.vqsr_pipeline/strictAnnoFiltPass_exclude49contam
+    O=${DIR}/lbp_wgs.chr${i}.vqsr_pipeline/strictAnnoFiltPass_exclude49contam_keep412inlel2021
+    plink --bfile ${I} --keep ${RID} --make-bed --out ${O}
+  done
+
+# EXPLORE: some counts to establish who is left in this data
+  #
+  # What is out expectation?
+  # - From earlier code block "check what we are sending to vanderbilt", 
+  #   we can see of the 418 iid (from 535 brains bulk rnaseq'ed) we sent
+  #   VUMC dna for wgs for 416. The two missing were PT-0063 and PT-0118.
+  # - From /sc/arion/projects/psychgen/lbp/data/RAW/dna/wgs/00README, 
+  #   we can see that of the 500 samples sent to VUMC, there was one with
+  #   ultimately not enough DNA to sequence. This sample was given the 
+  #   VUMC identifers 5721-EC-295 and 5721-EC-504 (original submission 
+  #   and re-submission). This is individual PT-0128, which is in the 418
+  #   samples with bulk rnaseq.
+  # - So, amongst the 412 iid postqc, we expect >=409 to be present in the 
+  #   WGS data. Any less would suggest something unexpected is happening. 
+  #
+  cd ${SCR}
+  cur=${DIR}/lbp_wgs.chr1.vqsr_pipeline/strictAnnoFiltPass
+  cr2=${cur}_exclude49contam
+  cr3=${cur}_exclude49contam_keep412inlel2021 
+  awk 'NR>1 {print $1}' ${RID} | sort | uniq | wc -l #412 ... individuals in rnaseq
+  bcftools query --list-samples ${cur}.vcf.gz | wc -l #499 ... individuals in wgs vcf
+  cat ${cur}.fam | awk '{print $1}' | sort | uniq | wc -l #499 ... individuals in wgs (sanity check)
+  cat ${cr2}.fam | awk '{print $1}' | sort | uniq | wc -l #450 ... individuals in wgs after removing contaminated samples
+  cat ${cr3}.fam | awk '{print $1}' | sort | uniq | wc -l #364 ... individuals in wgs after removing contaminated samples ands intersecting with rnaseq
+  #
+  # 364 seems low, is this what we expected? 
+  #
+  awk 'NR>1 {print $1}' ${RID} | sort | uniq > tmp1 #rnaseq 
+  cat ${cur}.fam | awk '{print $1}' | sort | uniq > tmp2 #wgs
+  cat ${cr2}.fam | awk '{print $1}' | sort | uniq > tmp3 #wgs without contamination
+  comm -12 tmp1 tmp2 > tmp12
+  comm -12 tmp1 tmp3 > tmp13
+  cat tmp12 | wc -l #409 ... samples shared in rnaseq and wgs (amazingly what we expected)
+  cat tmp13 | wc -l #364 ... so, 45 (409-364) of the 49 contaminated samples were in rnaseq, ok
+  comm -23 tmp12 tmp13 | wc -l #45 (sanity check)
+  comm -23 tmp12 tmp13 > tmp1213
+  #
+  # of the people in rnaseq we lose are they LIV or PM? PM
+  #
+  grep -wf tmp1213 ${RID} | awk '{print $3}' | sort | uniq -c
+  #    5 0 ... LIV
+  #   40 1 ... PM
+  #
+  # of the people in rnaseq we keep, what is LIV/PM count?
+  #
+  grep -wf tmp13 ${RID} | awk '{print $3}' | sort | uniq -c
+  #  161 0
+  #  203 1
+  #
+  # how many snps are we starting with here?
+  #
+  find ${DIR}/ -wholename *bim | grep keep412inlel2021 | xargs cat | wc -l #32652779
+
+# STEP4: merge chromosomes
+  cd ${DIR}
+  echo ${DIR}/lbp_wgs.chr{2,3,4,5,6,7,8,9,10,1{1..9},20,21,22,X,Y}.vqsr_pipeline/strictAnnoFiltPass_exclude49contam_keep412inlel2021 | tr ' ' '\n' > ${SCR}/tmp
+  I=${DIR}/lbp_wgs.chr1.vqsr_pipeline/strictAnnoFiltPass_exclude49contam_keep412inlel2021
+  O=${DIR}/strictAnnoFiltPass_exclude49contam_keep412inlel2021
+  plink --bfile ${I} --merge-list ${SCR}/tmp --make-bed --out ${O}
+
+# basic variant/sample qc
+  I=${DIR}/strictAnnoFiltPass_exclude49contam_keep412inlel2021
+  O=${DIR}/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16
+  plink --bfile ${I} --make-bed --out ${O} --geno 0.02 --mac 10 --hwe 0.0000000000000005
+  cat ${O}.bim | wc -l #7933731 ... nsnps left
+
+#+END_SRC
+###/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16
+
+
+* STEP 1 - WGS DATA PREPARATION | calculate PCA covariates from WGS data
+
+#+NAME: CALCULATE_pca_for_eqtl_analysis
+#+BEGIN_SRC shell
+## This code block calculates ancestry PCs to use as covariates in QTL analyses
+
+# setup
+  ml plink
+  dir=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement
+  scr=/sc/arion/projects/psychgen/lbp/scratch
+  sel=~/recently_selected_regions_hg38_nochr.bed
+  tgp=/sc/arion/projects/psychgen/resources/genotype_ref_panel/1000g/ALL.chr.phase3_shapeit2_mvncall_integrated_v5.20130502/full_rsIDmaf1pctHwe9
+  sam=/sc/arion/projects/psychgen/resources/genotype_ref_panel/1000g/integrated_call_samples_v3.20130502.ALL.panel
+  myd=${dir}/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_maf0p05_rmSelReg_prune_1000_100_0p1
+  cd ${scr}
+
+# LBP - filter and prune
+  ##
+  ##filter
+  ##
+  I1=${dir}/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16
+  I2=${sel}
+  O1=${scr}/TMP_keepme.list
+  O2=${scr}/TMP_leaveme.bed
+  O3=${scr}/TMP_lbp_auto
+  awk '$1<=22 {print $2}' ${I1}.bim | sort | uniq > ${O1}
+  awk -v OFS='\t' '{print $1, $2, $3, "index"NR}' ${I2} > ${O2}
+  plink --bfile ${I1} --extract ${O1} --exclude 'range' ${O2} --geno 0.02 --maf 0.05 --make-bed --out ${O3}
+  ##
+  ##prune
+  ##
+  I=${scr}/TMP_lbp_auto
+  O1=${scr}/TMP_lbp_auto_prune
+  O2=${myd}
+  plink --bfile ${I} --indep-pairwise 1000 'kb' 1 0.1 --out ${O1} 
+  plink --bfile ${I} --extract ${O1}.prune.in --make-bed --out ${O2}
+  ##
+  ## how many snps left?
+  ##
+  wc -l ${O1}.prune.in #82252
+
+# PCA - for covariates
+  I=${myd}
+  O=${myd}.plinkPCA
+  plink --bfile ${I} --pca --out ${O}
+
+
+#+END_SRC
+###/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_maf0p05_rmSelReg_prune_1000_100_0p1.plinkPCA.eigenvec
+
+
+* STEP 1 - WGS DATA PREPARATION | create separate subsets of the WGS data for LIV and PM 
+
+#+NAME: FORMAT_liv_and_pm_separation
+#+BEGIN_SRC shell
+## This code block create separate subsets of the WGS data for LIV and PM so QTL analyses can be performed on them separately
+
+# setup 
+  ml plink
+  DIR=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement
+  SCR=/sc/arion/projects/psychgen/lbp/scratch
+  ALL=${DIR}/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16
+  PCA=${DIR}/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_maf0p05_rmSelReg_prune_1000_100_0p1.plinkPCA.eigenvec
+  RID=/sc/arion/projects/psychgen/lbp/files/lel2021_n412_individuals_postqc.tsv
+
+# list liv and pm samples
+  cd ${SCR}
+  awk '{print $1}' ${ALL}.fam > tmp
+  grep -wf tmp ${RID} | awk '$3==0' > tmp1 
+  grep -wf tmp ${RID} | awk '$3==1' > tmp2
+
+# liv
+  I=${ALL}
+  O=${ALL}_LIV
+  plink --bfile ${I} --keep tmp1 --make-bed --out ${O}
+  I=${ALL}_LIV
+  O=${ALL}_LIV_mac5
+  plink --bfile ${I} --mac 5 --make-bed --out ${O}
+  cat ${O}.bim | wc -l #7562623
+
+# pm
+  I=${ALL}
+  O=${ALL}_PM
+  plink --bfile ${I} --keep tmp2 --make-bed --out ${O}
+  I=${ALL}_PM
+  O=${ALL}_PM_mac5
+  plink --bfile ${I} --mac 5 --make-bed --out ${O}
+  cat ${O}.bim | wc -l #7810875
+
+#+END_SRC
+
+
+* STEP 1 - (NOT REQUIRED) WGS DATA PREPARATION | exploring ancestries in the LBP cohort
+
+#+NAME: CALCULATE_ancestry
+#+BEGIN_SRC shell
+## This code block CALCULATES ancestry PCs in TGP space for the LBP cohort to determine continential groupings
+
+# setup
+  ml plink perl
+  dir=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement
+  scr=/sc/arion/projects/psychgen/lbp/scratch
+  sel=~/recently_selected_regions_hg38_nochr.bed 
+  res=/sc/arion/projects/psychgen/resources/genotype_ref_panel/1000g
+  tgp=${res}/ALL.chr.phase3_shapeit2_mvncall_integrated_v5.20130502/full_rsIDmaf1pctHwe9
+  sam=${res}/integrated_call_samples_v3.20130502.ALL.panel
+  dbs=/sc/arion/projects/H_PBG/REFERENCES/GRCh38/dbsnp-vcf/00-All.vcf.gz
+  chn=/sc/arion/projects/psychgen/software/liftover/hg19ToHg38.over.chain.gz
+  cd ${scr}
+
+# LBP - filter
+  I1=${dir}/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16
+  I2=${sel}
+  O1=${scr}/TMP_keepme.list
+  O2=${scr}/TMP_leaveme.bed
+  O3=${scr}/TMP_lbp_auto
+  awk '$1<=22 {print $2}' ${I1}.bim | sort | uniq > ${O1}
+  awk -v OFS='\t' '{print $1, $2, $3, "index"NR}' ${I2} > ${O2}
+  plink --bfile ${I1} --extract ${O1} --exclude 'range' ${O2} --geno 0.02 --maf 0.05 --make-bed --out ${O3}
+
+# LBP - update snp id
+  bcftools query -f '%CHROM:%POS\[b38\]%REF,%ALT %ID\n' ${dbs} | tr ' ' '\t' > ${scr}/updater
+  awk '{print $2}' ${scr}/TMP_lbp_auto.bim > ${scr}/tmplist
+  perl ${MW}/scripts/misc/subset_supplycol_space.pl ${scr}/tmplist ${scr}/updater 0 > ${scr}/updater5m
+  awk '{print $1}' ${scr}/updater5m | sort | uniq -c | awk '$1==1 {print $2}' > ${scr}/updater5m_goodguys
+  perl ${MW}/scripts/misc/subset_supplycol_space.pl ${scr}/updater5m_goodguys ${scr}/updater5m 0 > ${scr}/updater5mS
+  I=${scr}/TMP_lbp_auto
+  O=${scr}/TMP_lbp_auto_rsid
+  plink --bfile ${I} --extract ${scr}/updater5mS --make-bed --out ${O}
+  plink --bfile ${O} --update-name ${scr}/updater5mS --make-bed --out ${O}
+
+# LBP - prune
+  I=${scr}/TMP_lbp_auto_rsid
+  O=${scr}/TMP_lbp_auto_rsid_prune
+  plink --bfile ${I} --indep-pairwise 1000 'kb' 1 0.1 --out ${O} 
+  plink --bfile ${I} --extract ${O}.prune.in --make-bed --out ${O}
+  ##
+  ## how many snps left?
+  ##
+  wc -l ${O}.prune.in #71234
+  ##
+  ## how many of the snps left are in tgp?
+  ##
+  F1=${O}.prune.in
+  F2=${tgp}.bim
+  awk '{print $1}' ${F1} | sort | uniq > TMP1
+  awk '{print $2}' ${F2} | sort | uniq > TMP2
+  comm -12 TMP1 TMP2 | wc -l #55644
+  comm -12 TMP1 TMP2 > ${scr}/keepme
+
+# TGP - subset for shared snps 
+  I=${tgp}
+  O=${scr}/TMP_tgp_lbpsharedsnps
+  plink --bfile ${I} --extract ${scr}/keepme --make-bed --out ${O}
+
+# TGP - make liftOver input
+  I=${scr}/TMP_tgp_lbpsharedsnps.bim
+  O=${scr}/lift.in1
+  awk '{ $1 = ($1=="23" ? "X" : $1) }1 { $1 = ($1=="24" ? "Y" : $1) }1 {print "chr"$1, $4, $4+1, $2}' ${I} > ${O}
+
+# TGP - run liftOver
+  I=${scr}/lift.in1
+  O1=${scr}/lift.out1
+  O2=${scr}/lift.unlifted1
+  liftOver ${I} -minMatch=0.95 ${chn} ${O1} ${O2}
+
+# TGP - reformat liftOver output for plink
+  I=${scr}/lift.out1
+  O=${scr}/lift.out1.update
+  awk '{print $4, $2}' ${I} > ${O}
+
+# TGP - update positions
+  I=${scr}/TMP_tgp_lbpsharedsnps
+  O=${scr}/TMP_tgp_lbpsharedsnps_hg38
+  L=${scr}/lift.out1.update
+  plink --bfile ${I} --update-map ${L} --make-bed --out ${O}
+
+# LBP/TGP - merge
+  I1=${scr}/TMP_tgp_lbpsharedsnps_hg38
+  I2=${scr}/TMP_lbp_auto_rsid_prune 
+  O1=${scr}/TMP_lbp_tgp_mer
+  plink --bfile ${I1} --bmerge ${I2}.{bed,bim,fam} --geno 0.02 --make-bed --out ${O1} --allow-extra-chr
+  ##
+  ## remove missnp
+  ##
+  MS=${O1}-merge.missnp
+  plink --bfile ${I1} --exclude ${MS} --make-bed --out ${I1} --allow-extra-chr 
+  plink --bfile ${I2} --exclude ${MS} --make-bed --out ${I2} --allow-extra-chr 
+  ##
+  ## merge
+  ##
+  plink --bfile ${I1} --bmerge ${I2}.{bed,bim,fam} --geno 0.02 --make-bed --out ${O1} --allow-extra-chr
+
+# TGP - make cluster file (for plink pca projection)
+  I=${sam}
+  O1=${scr}/withinclusters
+  O2=${scr}/clusters
+  awk 'NR>1 {print $1, $1, $3}' ${I} > ${O1}
+  awk 'NR>1 {print $3}' ${I} | sort | uniq > ${O2}
+
+# PCA - LBP/TGP from LBP pruning pre-merge
+  I=${scr}/TMP_lbp_tgp_mer
+  O=${scr}/TMP_lbp_tgp_mer_pca
+  F1=${scr}/withinclusters 
+  F2=${scr}/clusters
+  plink --bfile ${I} --pca --out ${O} --within ${F1} --pca-clusters ${F2}
+
+#+END_SRC
+#+BEGIN_SRC R
+## This code block EXPLORES the ancestry PCs in TGP space for the LBP cohort to determine continential groupings
+
+# setup 
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(GGally)
+  setwd("/sc/arion/projects/psychgen/lbp/scratch")
+
+# livpm 
+  lbp <- fread("/sc/arion/projects/psychgen/lbp/files/lel2021_n412_individuals_postqc.tsv")
+  lbp[,LIVPM:="LIV"]
+  lbp[mymet_postmortem==1,LIVPM:="PM"]
+  lbp <- lbp[,.(IID,LIVPM)]
+
+# tgp metadata 
+  tgp <-  "/sc/arion/projects/psychgen/resources/genotype_ref_panel/1000g/integrated_call_samples_v3.20130502.ALL.panel"
+  map <-  fread(tgp, fill=T, header=T)[,.(sample, pop,super_pop,gender)]
+
+# pca results 
+  pca <- fread("/sc/arion/projects/psychgen/lbp/scratch/TMP_lbp_tgp_mer_pca.eigenvec", header=F)
+  colnames(pca) <- c("IID", "sample", paste0("PC", 1:20))
+  pca <- merge(map, pca, all.y=T)
+  pca <- merge(pca, lbp, by="IID", all.x=T)
+  pca[, plotter:="TGP"]
+  pca[is.na(pop) & LIVPM=="LIV", plotter:="LBP_LIV"]
+  pca[is.na(pop) & LIVPM=="PM", plotter:="LBP_PM"]
+
+# plots
+  pcpair <- t(combn(paste0("PC", 1:5), 2))
+  d <- pca
+  n <- "LBP_TGP_prunedLBP"
+  pdf("~/www/figures/lbp/lbptgp_ancestry_08APR2022.pdf", width=11, height=8.5)
+    for (j in 1:nrow(pcpair)){
+        pcx <- pcpair[j,1]
+        pcy <- pcpair[j,2]
+        p <- ggplot(d, aes(get(pcx), get(pcy), col=super_pop)) + geom_point(size=3, alpha=0.3) + theme_base() + facet_wrap(~plotter) + xlab(pcx) + ylab(pcy) + ggtitle(n)
+        show(p)        
+    }
+  dev.off()
+
+#+END_SRC
+
+
+* STEP 2 - QTL ANALYSES | format data for QTLtools 
+
+#+NAME: format_data
+#+BEGIN_SRC R
+## This code block puts the required data pieces for QTL analyses (genetic, omic, covariates) in file format QTLtools requires
+
+# setup 
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement")
+
+# header for making bed files
+  bed <- fread("~/www/files/rnaseq_bed_header.tsv")
+
+# fam
+  lv.fam <- fread("strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_LIV_mac5.fam", header=F)
+  pm.fam <- fread("strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_PM_mac5.fam", header=F)
+
+# bim
+  lv.bim <- fread("strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_LIV_mac5.bim", header=F)
+  pm.bim <- fread("strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_PM_mac5.bim", header=F)
+  lv.chr <- unique(lv.bim$V1)
+  pm.chr <- unique(pm.bim$V1)
+
+# rnaseq data
+  mydata <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  mymeta <- mydata$covariates 
+  lv.sam <- mymeta[mymet_postmortem==0,.(iid=IID_ISMMS, sid=SAMPLE_ISMMS)]
+  pm.sam <- mymeta[mymet_postmortem==1,.(iid=IID_ISMMS, sid=SAMPLE_ISMMS)]
+  ##lv.rna <- mydata$residuals[,lv.sam$sid]
+  ##pm.rna <- mydata$residuals[,pm.sam$sid]
+  lv.rna <- mydata$vobjDream$E[,lv.sam$sid]
+  pm.rna <- mydata$vobjDream$E[,pm.sam$sid]
+  uniqueN(lv.sam$iid) #[1] 169
+  uniqueN(pm.sam$iid) #[1] 243
+  dim(lv.rna) #[1] 21635   275
+  dim(pm.rna) #[1] 21635   243
+
+# choose one sid per liv iid
+  set.seed(666)
+  lv.one <- lv.sam[,.N,iid][N==1]$iid
+  lv.two <- lv.sam[,.N,iid][N==2]$iid
+  lv.one <- lv.sam[iid %in% lv.one]
+  lv.two <- lv.sam[iid %in% lv.two]
+  for (i in unique(lv.two$iid)){
+      pic <- sample(lv.two[iid==i]$sid, 1)
+      add <- lv.two[sid==pic]
+      lv.one <- rbind(lv.one, add)
+  }
+  lv.sam <- copy(lv.one)
+  rm(lv.one)
+  rm(lv.two)
+
+# subset for samples in wgs
+  lv.sam <- lv.sam[iid %in% lv.fam$V1]
+  pm.sam <- pm.sam[gsub("_", "-", iid) %in% pm.fam$V1]
+  nrow(lv.sam) #[1] 161
+  nrow(pm.sam) #[1] 203
+
+# subset expression matrices
+  lv.rna <- lv.rna[,lv.sam$sid]
+  pm.rna <- pm.rna[,pm.sam$sid]
+  dim(lv.rna) #[1] 21635   161
+  dim(pm.rna) #[1] 21635   203
+
+# rename ids in expression data
+  identical(colnames(lv.rna), lv.sam$sid) #[1] TRUE
+  identical(colnames(pm.rna), pm.sam$sid) #[1] TRUE
+  colnames(lv.rna) <- lv.sam$iid
+  colnames(pm.rna) <- pm.sam$iid
+
+# rename genes in expression data
+  lv.tmp <- data.table(old=rownames(lv.rna))
+  pm.tmp <- data.table(old=rownames(pm.rna))
+  lv.tmp[,new:=tstrsplit(old, split=".", fixed=T, keep=1L)]
+  pm.tmp[,new:=tstrsplit(old, split=".", fixed=T, keep=1L)]
+  rownames(lv.rna) <- lv.tmp$new 
+  rownames(pm.rna) <- pm.tmp$new 
+  rm(lv.tmp)
+  rm(pm.tmp)
+
+# bed format
+  lv.bed <- bed[,.(`#Chr`=Chr, start=Start, end=End, pid=Geneid, gid=Geneid, strand=Strand)]
+  pm.bed <- bed[,.(`#Chr`=Chr, start=Start, end=End, pid=Geneid, gid=Geneid, strand=Strand)]
+  lv.bed[,`#Chr`:=gsub("chr", "", `#Chr`)]
+  pm.bed[,`#Chr`:=gsub("chr", "", `#Chr`)]
+  lv.bed <- lv.bed[`#Chr` %in% lv.chr]
+  pm.bed <- pm.bed[`#Chr` %in% pm.chr]
+  lv.bed[,gid:=tstrsplit(gid, split=".", fixed=T, keep=1L)]
+  pm.bed[,gid:=tstrsplit(gid, split=".", fixed=T, keep=1L)]
+  lv.bed[,pid:=tstrsplit(pid, split=".", fixed=T, keep=1L)]
+  pm.bed[,pid:=tstrsplit(pid, split=".", fixed=T, keep=1L)]
+  lv.gen <- intersect(lv.bed$gid, rownames(lv.rna))
+  pm.gen <- intersect(pm.bed$gid, rownames(pm.rna))
+  length(lv.gen) #[1] 20888
+  length(pm.gen) #[1] 20888 ... so we lose 600+ genes
+  lv.bed <- lv.bed[gid %in% lv.gen]
+  pm.bed <- pm.bed[gid %in% pm.gen]
+  lv.bed <- lv.bed[order(as.integer(`#Chr`), start)]
+  pm.bed <- pm.bed[order(as.integer(`#Chr`), start)]
+  lv.rna <- lv.rna[lv.bed$gid,]
+  pm.rna <- pm.rna[pm.bed$gid,]
+  dim(lv.bed) #[1] 20888     6
+  dim(pm.bed) #[1] 20888     6
+  dim(lv.rna) #[1] 20888   161
+  dim(pm.rna) #[1] 20888   203
+  identical(lv.bed$gid, rownames(lv.rna)) #[1] TRUE
+  identical(pm.bed$gid, rownames(pm.rna)) #[1] TRUE ... sanity checks, ok
+  lv.rna <- cbind(lv.bed, lv.rna)
+  pm.rna <- cbind(pm.bed, pm.rna)
+  colnames(pm.rna) <- gsub("_", "-", colnames(pm.rna)) #match the miami id in wgs
+  sum( pm.fam$V1 %in% colnames(pm.rna) ) #[1] 203
+
+# format mds
+  lb.mds <- fread("strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16_maf0p05_rmSelReg_prune_1000_100_0p1.plinkPCA.eigenvec")
+  lb.mds <- lb.mds[,2:7]
+  colnames(lb.mds) <- c("id", paste0("PC",1:5))
+  lv.mds <- lb.mds[id %in% lv.sam$iid]
+  pm.mds <- lb.mds[id %in% gsub("_", "-", pm.sam$iid)]
+  lv.mds <- as.data.frame(lv.mds)
+  pm.mds <- as.data.frame(pm.mds)
+  rownames(lv.mds) <- lv.mds$id
+  rownames(pm.mds) <- pm.mds$id
+  lv.mds$id <- NULL
+  pm.mds$id <- NULL
+  lv.mds <- t(lv.mds)
+  pm.mds <- t(pm.mds)
+  lv.mds <- data.frame("id"=rownames(lv.mds),lv.mds)
+  pm.mds <- data.frame("id"=rownames(pm.mds),pm.mds)
+  colnames(lv.mds) <- gsub(".", "-", fixed=T, colnames(lv.mds))
+  colnames(pm.mds) <- gsub(".", "-", fixed=T, colnames(pm.mds))
+
+# sanity checks
+  sum( lv.fam$V1 %in% colnames(lv.rna) ) #[1] 161
+  sum( lv.fam$V1 %in% colnames(lv.mds) ) #[1] 161
+  sum( pm.fam$V1 %in% colnames(pm.rna) ) #[1] 203
+  sum( pm.fam$V1 %in% colnames(pm.mds) ) #[1] 203
+
+# save
+  odr <- "/sc/arion/projects/psychgen/lbp/data/runEQTL/lel2021/"
+  of1 <- paste0(odr, "LIV_mds.txt")
+  of2 <- paste0(odr, "PM_mds.txt")
+  of3 <- paste0(odr, "LIV_rna.bed")
+  of4 <- paste0(odr, "PM_rna.bed")
+  write.table(lv.mds, row=F, quo=F, file=of1)
+  write.table(pm.mds, row=F, quo=F, file=of2)
+  fwrite(lv.rna, sep='\t', row=F, quo=F, file=of3)
+  fwrite(pm.rna, sep='\t', row=F, quo=F, file=of4)
+
+#+END_SRC
+
+
+* STEP 2 - QTL ANALYSES | run QTLtools
+
+#+NAME: run_qtltools
+#+BEGIN_SRC shell
+## This code block runs the actual QTL analysis (using QTLtools)
+
+# setup
+  module load tabix qtltools/1.1 plink2/b2c
+  idr=/sc/arion/projects/psychgen/lbp/data/runEQTL/lel2021
+  scr=/sc/arion/projects/psychgen/lbp/scratch
+  gdr=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement
+  gen=${gdr}/strictAnnoFiltPass_exclude49contam_keep412inlel2021_macgt10_geno0p01_hwe5en16
+  sdr=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/lel2021
+  rdr=/sc/arion/projects/psychgen/lbp/results/runEQTL/lel2021
+  lmd=/sc/arion/projects/psychgen/lbp/data/runEQTL/lel2021/LIV_mds.txt
+  pmd=/sc/arion/projects/psychgen/lbp/data/runEQTL/lel2021/PM_mds.txt
+ 
+# compress rnaseq bed files
+  cd ${idr}
+  for i in LIV PM
+  do
+    echo ${i}
+    bgzip ${i}_rna.bed && tabix -p bed ${i}_rna.bed.gz
+  done
+
+# make genetic data into vcf
+  cd ${idr}
+  plink2 --bfile ${gen}_LIV_mac5 --recode vcf-fid --out ${idr}/LIV_dna
+  plink2 --bfile ${gen}_PM_mac5 --recode vcf-fid --out ${idr}/PM_dna
+  bgzip ${idr}/LIV_dna.vcf && tabix -p vcf ${idr}/LIV_dna.vcf.gz
+  bgzip ${idr}/PM_dna.vcf && tabix -p vcf ${idr}/PM_dna.vcf.gz
+
+# run
+  cd ${sdr}
+  lvc=${idr}/LIV_dna.vcf.gz 
+  pvc=${idr}/PM_dna.vcf.gz
+  lbd=${idr}/LIV_rna.bed.gz
+  pbd=${idr}/PM_rna.bed.gz
+  for i in {1..300}
+  do 
+    of1=${rdr}/LIV_${i}.txt
+    of2=${rdr}/PM_${i}.txt
+    sc1=${sdr}/LIV_${i}.sh
+    sc2=${sdr}/PM_${i}.sh
+    echo "module load qtltools/1.1 tabix" > ${sc1}
+    echo "module load qtltools/1.1 tabix" > ${sc2}
+    echo "QTLtools cis --vcf ${lvc} --bed ${lbd} --permute 10000 --chunk ${i} 300 --out ${of1} --cov ${lmd}" >> ${sc1}
+    echo "QTLtools cis --vcf ${pvc} --bed ${pbd} --permute 10000 --chunk ${i} 300 --out ${of2} --cov ${pmd}" >> ${sc2}
+    mybsub psychgen `basename ${sc1}` 50000 5:00 premium 1 "sh ${sc1}"
+    mybsub psychgen `basename ${sc2}` 50000 5:00 premium 1 "sh ${sc2}"
+  done
+
+# check jobs finished and clean up 
+  cd ${sdr}
+  ls -1 *stdout | sort | uniq > sent
+  grep Success *stdout | awk -F":" '{print $1}' | sort | uniq > success 
+  comm -23 sent success | sort | uniq > fail
+  wc -l sent success fail
+  #600 sent
+  #600 success
+  #  0 fail 
+
+# combine
+  cat ${rdr}/LIV_*.txt > ${rdr}/MERGED_LIV.txt
+  cat ${rdr}/PM_*.txt > ${rdr}/MERGED_PM.txt
+
+#+END_SRC
+
+
+* STEP 2 - QTL ANALYSES | look at QTLtools output
+
+#+NAME: assess_qtltools
+#+BEGIN_SRC R
+## This code block takes a quick look at the output of QTLtools to see how many QTLs were found
+
+############################################################
+# QTLtools output
+#
+# 1. phenotype ID
+# 2. chromosome ID of the phenotype
+# 3. start position of the phenotype
+# 4. end position of the phenotype
+# 5. strand orientation of the phenotype
+# 6. total number of variants tested in cis
+# 7. distance between the phenotype and the tested variant (accounting for strand orientation)
+# 8. ID of the top variant
+# 9. chromosome ID of the top variant
+# 10. start position of the top variant
+# 11. end position of the top variant
+# 12. number of degrees of freedom used to compute the P-values
+# 13. Dummy
+# 14. first parameter value of the fitted beta distribution
+# 15. second parameter value of the fitted beta distribution (it also gives the effective number of independent tests in the region)
+# 16. nominal P-value of association between the phenotype and the top variant in cis
+# 17. corresponding regression slope
+# 18. P-value of association adjusted for the number of variants tested in cis given by the direct method (i.e. empirircal P-value)
+# 19. P-value of association adjusted for the number of variants tested in cis given by the fitted beta distribution. 
+#      We strongly recommend to use this adjusted P-value in any downstream analysis
+#
+############################################################
+
+# setup
+  rm(list=ls())
+  library(qvalue)
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  setwd("/sc/arion/projects/psychgen/lbp/results/runEQTL/lel2021")
+  cnames <- c( "pid", "chr", "start", "end", "strand", "NVariants", "distToTopVar", 
+              "IDTopVar", "chrTopVar", "startTopVar", "endTopVar", "nDF", "Dummy", 
+              "betaparam1", "betaparam2", "nominalPVal", "regressionSlope", "ppval", "bpval")
+
+# read in results
+  lv <- fread("MERGED_LIV.txt", header=F, sep=" ", col.names=cnames)
+  pm <- fread("MERGED_PM.txt", header=F, sep=" ", col.names=cnames)
+
+# pval correction
+  lv[,bonferroni := p.adjust(bpval, method="bonferroni")]
+  lv[,bh := p.adjust(bpval, method="fdr")]
+  lv[,st := qvalue(bpval)$qvalues]
+  pm[,bonferroni := p.adjust(bpval, method="bonferroni")]
+  pm[,bh := p.adjust(bpval, method="fdr")]
+  pm[,st := qvalue(bpval)$qvalues]
+
+# count number of signif eqtls in liv and pm
+  num_signif <- data.frame(matrix(data=NA,nrow=2,ncol=4))
+  rownames(num_signif) <- c("lv", "pm")
+  colnames(num_signif) <- c("bonferroni","benjamini","storey","pval")
+  num_signif["lv",1:3] <- c( nrow(lv[bonferroni <= 0.05]), nrow(lv[bh <= 0.1]), nrow(lv[st <= 0.1]) )
+  num_signif["pm",1:3] <- c( nrow(pm[bonferroni <= 0.05]), nrow(pm[bh <= 0.1]), nrow(pm[st <= 0.1]) )
+  num_signif
+  #   bonferroni benjamini storey pval
+  #lv        415      1079   1085   NA
+  #pm        549      1308   1376   NA
+
+# results
+  png("~/www/figures/lbp/lel2021_livpm_eQTL_permutations_beta_approx_check_LIV.png")
+    plot(lv$ppval, lv$bpval, xlab="Direct method", ylab="Beta approximation", main="Check plot - LIV")
+    abline(0, 1, col="red")
+  dev.off()
+  png("~/www/figures/lbp/lel2021_livpm_eQTL_permutations_beta_approx_check_PM.png")
+    plot(pm$ppval, pm$bpval, xlab="Direct method", ylab="Beta approximation", main="Check plot - PM")
+    abline(0, 1, col="red")
+  dev.off()
+
+# plot distributions
+  lv$model <- "lv"
+  pm$model <- "pm"
+  mer <- rbind(lv, pm)
+  pdf("~/www/figures/lbp/lel2021_livpm_eQTL_compare_LIV_PM.pdf")
+    p1 <- ggplot(mer, aes(-log10(bpval), fill=model)) + geom_density(alpha=0.3) + theme_base() 
+    p2 <- ggplot(mer, aes(betaparam1, fill=model)) + geom_density(alpha=0.3) + theme_base() 
+    p3 <- ggplot(mer, aes(betaparam2, fill=model)) + geom_density(alpha=0.3) + theme_base() 
+    p4 <- ggplot(mer, aes(-log10(nominalPVal), fill=model)) + geom_density(alpha=0.3) + theme_base() 
+    show(p1)
+    show(p2)
+    show(p3)
+    show(p4)
+  dev.off()
+
+#+END_SRC
+
