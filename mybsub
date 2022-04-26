@@ -1,0 +1,29 @@
+#!/bin/bash
+
+if [ "$#" -lt 7 ]
+then
+    echo "Usage: $0 account jobname mem time queue nthreads command [optional 8th argument: partition]" >&2
+    exit 1
+fi
+
+p=`pwd`
+act=$1
+name=$2
+m=$3
+t=$4
+q=$5
+n=$6
+cmd=$7
+
+if [ "$#" -eq 7 ]
+then
+    echo "echo \"cd ${p}; ${cmd}\" | bsub -q ${q} -P acc_${act} -cwd ${p} -J ${name} -oo ${name}.stdout -eo ${name}.stderr -n ${n} -R \"rusage[mem=${m}] span[hosts=1]\" -W ${t}"
+    echo "echo \"cd ${p}; ${cmd}\" | bsub -q ${q} -P acc_${act} -cwd ${p} -J ${name} -oo ${name}.stdout -eo ${name}.stderr -n ${n} -R \"rusage[mem=${m}] span[hosts=1]\" -W ${t}" | sh
+fi
+
+if [ "$#" -eq 8 ]
+then
+    par=$8
+    echo "echo \"cd ${p}; ${cmd}\" | bsub -m ${par} -q ${q} -P acc_${act} -cwd ${p} -J ${name} -oo ${name}.stdout -eo ${name}.stderr -n ${n} -R \"rusage[mem=${m}] span[hosts=1]\" -W ${t}"
+    echo "echo \"cd ${p}; ${cmd}\" | bsub -m ${par} -q ${q} -P acc_${act} -cwd ${p} -J ${name} -oo ${name}.stdout -eo ${name}.stderr -n ${n} -R \"rusage[mem=${m}] span[hosts=1]\" -W ${t}" | sh
+fi
