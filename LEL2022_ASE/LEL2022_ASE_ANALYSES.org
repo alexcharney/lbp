@@ -1,0 +1,501 @@
+
+* README
+
+#+NAME: README
+#+BEGIN_SRC 
+## Workflow is: 
+##    Sequencing (fastq) 
+##    > DRAGEN Alignment (bam) 
+##      > DRAGEN Variant Calling (gvcf) 
+##        > GATK GenomicsDBImport (dbi) 
+##          > GATK GenotypeGVCFs (vcf)
+##            > Custom filters (miscellaneous)
+
+--------------------------------------
+How did we get here?
+--------------------------------------
+
+1) We sent DNA to Vanderbilt University Medical Center (VUMC) (Patient -> DNA)
+  
+  # where is manifest we sent vanderbilt?
+  /sc/arion/projects/psychgen/lbp/files/wgs/LBP_WGS_VUMC_ID_MANIFEST.xlsx #esther emailed to awc 13JUL2021
+  /sc/arion/projects/psychgen/lbp/files/wgs/NGS_SampleSubmissionForm_Charney.xlsx #esther emailed to vumc 14JUL2021 (row10 is header)
+
+2) VUMC returned raw reads in fastqs (DNA -> FASTQ)
+
+  # where are fastq from vanderbilt?
+  cat /sc/arion/projects/psychgen/lbp/data/RAW/dna/wgs/00README
+  find /sc/arion/projects/psychgen/lbp/data/RAW/dna/wgs/ -wholename "*fastq.gz" \
+       > /sc/arion/projects/psychgen/lbp/files/wgs/LBP_WGS_VUMC_FASTQLIST.txt 
+
+3) Reads were aligned using DRAGEN by Hardik in Sebra lab (FASTQ -> BAM)
+
+  # where is script hardik used to call dragen?
+  cat /sc/arion/projects/psychgen/lbp/data/dna/wgs_dragen/dragen.sh
+
+  # where is multi qc report from dragen?
+  https://charna02.u.hpc.mssm.edu/files/lbp/wgs/multiqc_report.html
+
+  # where are the bam hardik generated from fastq with dragen?
+  find /sc/arion/projects/psychgen/lbp/data/dna/wgs_dragen/ -wholename "*.bam" | wc -l #499
+  find /sc/arion/projects/psychgen/lbp/data/dna/wgs_dragen/ -wholename "*.bam" \
+       > /sc/arion/projects/psychgen/lbp/files/wgs/LBP_WGS_VUMC_BAMLIST.txt
+
+4) Genetic variants were called using DRAGEN by Hardik (BAM -> GVCF)
+
+  # where are the gvcf hardik generated with dragen?
+  find /sc/arion/projects/psychgen/lbp/data/dna/wgs_dragen/ -wholename "*.hard-filtered.gvcf.gz" | wc -l #499
+  find /sc/arion/projects/psychgen/lbp/data/dna/wgs_dragen/ -wholename "*.hard-filtered.gvcf.gz" \
+       > /sc/arion/projects/psychgen/lbp/files/wgs/LBP_WGS_VUMC_GVCFLIST.txt
+
+5) "Joint calling" was performed by AWC using GATK (GVCF -> DBI -> VCF)
+
+  # where is the output of the first step in joint calling (gatk GenomicsDBImport)?
+  ls /sc/arion/projects/psychgen/lbp/data/dna/wgs_GenomicsDBImport
+
+  # where is the output of the joint calling (gatk GenotypeGVCFs)?
+  ls /sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeGVCFs/lbp_wgs.vcf.gz
+
+  # what does "./." mean in the final vcf?
+  # for example: HBHV-17-001-FC (5721-EC-61)|chr10|10003 - gt is "./." even though depth is 30 and its 29/1 REF/ALT ... why not 0/0?
+  zgrep -m10 "chr10" /sc/arion/projects/psychgen/lbp/data/dna/wgs_dragen/5721-EC-61/5721-EC-61.hard-filtered.gvcf.gz
+    # 
+    # -> can see these are sites that in the gvcf are "LowGQ" 
+    #    ... so it seems this info is transferred to the merged vcf by the "./." designation
+    #
+
+6) Contaminated samples were identified via several months of struggling
+
+  # where is a list of contaminated samples?
+  /sc/arion/projects/psychgen/lbp/data/dna/wgs_VerifyBamID/combined_alpha.out (alpha>0.2)
+
+7) Variant Quality Score Recalibration was run on the VCF (gatk ApplVQSR, GenoTypeRefinement, SelectVariants)
+
+  # where are the files stored for the steps run here?
+  ls /sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/lbp_wgs.chr{1..22,{X,Y}}.vqsr_pipeline/
+
+8) Some custom variant-level filters were applied 
+
+   (a) Remove - Variants in joint-called vcf where AC is 0 before GenotypeRefinement (GR) step [257532]
+   (b) Remove - Variants in joint-called vcf where AC is 0 after GR step [3928392]
+   (c) Remove - Variants that SelectVariants sets AC/AF/AN to missing for unclear reasons [70205]
+   (d) Remove - 150-ish instances of multiallelics where diff AN for diff rows
+   (e) Remove - Variants with a "missingness" >5% after GenotypeRefinement (this seems like reasonable cutoff based on our data and gnomad)
+   (f) Keep - our "clean" filter (biallelic snvs only)
+
+----------------------------------
+What is plan now?
+----------------------------------
+1. For each individual, find set of PTVs
+2. Run allele-specific expression read counter (via GATK) for RNAseq bam
+3. Define evidence of nonsense-mediated decay (NMD) using established approach
+   ##e.g., https://www.sciencedirect.com/science/article/pii/S0002929721002329#bib12
+4. Test if NMD is differentially observed in LIV vs PM
+   ##hypothesis: if basic cellular mechanisms are awry PM, will be less of evidence of NMD in PM relative to LIV
+
+----------------------------------
+Some useful resources: 
+----------------------------------
+
+  # ASEReadCounter Tool Documentation
+  https://gatk.broadinstitute.org/hc/en-us/articles/360036885471-ASEReadCounter
+
+  # A few good allele-specific expression/nonsense-mediated decay papers
+  https://pubmed.ncbi.nlm.nih.gov/34216550/
+  https://pubmed.ncbi.nlm.nih.gov/30992545/
+  https://pubmed.ncbi.nlm.nih.gov/26381377/
+  https://pubmed.ncbi.nlm.nih.gov/31727827/
+
+  # Relevant threads/links on what to do with ASEReadCounter output
+  https://www.biostars.org/p/262243/
+  http://rstudio-pubs-static.s3.amazonaws.com/275642_e9d578fe1f7a404aad0553f52236c0a4.html
+
+#+END_SRC
+ 
+
+* STEP 1 - VARIANT ANNOTATION | Annotate WGS data using LOFTEE
+
+#+NAME: LOFTEE|get_loftee_annotations_to_add_to_ASEReadCounter_output
+#+BEGIN_SRC shell
+## This code block gets variant annotationed from the LOFTEE plugin of the VEP tool to define PTVs
+
+# setup
+  ml R gatk
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_lbp_wgs_variant_calling_process_anno.r
+  SCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_lbp_wgs_variant_annotation.sh
+  DIR=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement
+  SCR=/sc/arion/projects/psychgen/lbp/scratch/wgs_annotation
+
+# run loftee
+  cd ${SCR}
+  for i in {1,2,3,4,5,6,7,8,9,10,1{1..9},20,21,22,X,Y}  
+  do 
+    I1=${DIR}/lbp_wgs.chr${i}.vqsr_pipeline/strictAnnoFiltPass.vcf.gz
+    I2=${SCR}/chr${i}
+    mybsub psychgen chr${i} 10000 12:00 premium 1 "sh ${SCRIPT} --input ${I1} --scratchdir ${I2}"
+  done
+
+# check 
+  cd ${SCR}
+  grep Success chr*.stdout | wc -l #24
+  ls -1 chr*.stdout | wc -l #24
+  rm chr*.std{out,err}
+
+# format loftee output
+  cd ${SCR}
+  for i in {1,2,3,4,5,6,7,8,9,10,1{1..9},20,21,22,X,Y}  
+  do 
+    echo ${i}
+    I1=${SCR}/chr${i}/TMP_sites_only.noinfo.loftee.vcf.gz.rinput
+    I2=${SCR}/chr${i}/TMP_sites_only.noinfo.loftee.vcf.gz
+    O=${SCR}/chr${i}/TMP_loftee_clean.tsv
+    if [[ ! -f ${O}.success ]]
+    then
+      Rscript ${RSCRIPT} ${I1} ${I2} ${O}
+      STATUS=$?
+      if [[ ${STATUS} -eq 0 ]]
+      then 
+        touch ${O}.success
+      else
+          touch ${O}.fail
+          exit 1
+      fi
+    fi
+  done
+  find ${PWD}/ -wholename *clean*success | wc -l #24
+
+# combine 
+  cd ${SCR}
+  O=${DIR}/strictAnnoFiltPassLoftee.tsv 
+  for i in {1,2,3,4,5,6,7,8,9,10,1{1..9},20,21,22,X,Y}  
+  do
+    echo ${i}
+    if [[ ${i} == "1" ]]
+    then cat ${SCR}/chr${i}/TMP_loftee_clean.tsv > ${O}
+    else awk -v OFS="\t" 'NR>1' ${SCR}/chr${i}/TMP_loftee_clean.tsv >> ${O}
+    fi 
+  done
+
+# clean up 
+  rm -rf ${SCR}
+
+# sanity check 
+  find ${DIR}/ -wholename *strictAnnoFiltPass.vcf.gz.bcftools_query | xargs wc -l | grep total #32652803 ... 32,652,779 after removing headers
+
+#+END_SRC
+
+
+* STEP 1 - VARIANT ANNOTATION | Subset gnomAD data for sites with variants in LBP WGS data
+
+#+NAME: GNOMAD|get_gnomad_annotations_to_add_to_ASEReadCounter_output
+#+BEGIN_SRC R
+## This code block subsets the gnomad data for sites in our WGS data so we can use the gnomad frequencies in downstream analyses
+
+# setup
+  library(data.table)
+
+# loftee annotations
+  lof <- fread("/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/strictAnnoFiltPassLoftee.tsv", na=c(".", "", "NA"), sep='\t')
+  lof <- unique(lof[,.(CHROM, POS, REF, ALT)])
+  nrow(lof) #32652779 
+  ##
+  ##... see previous code block, checks out (all sites in strictAnnoFiltPass.vcf.gz wgs vcf are represented here)
+
+# gnomad (making a version of gnomad limited to sites in LBP WGS)
+  gnd <- "/sc/arion/projects/psychgen/resources/gnomAD/3.1.reformatted"
+  for (i in c(1:22, "X", "Y")) {
+      print(i)
+      gdt <- fread(paste0(gnd, "/gnomad.genomes.v3.1.sites.chr", i, ".tsv"), na=".")
+      gdt <- gdt[,.(CHROM, POS, REF, ALT, FILTER,
+                    AC, AC_raw, AF, AF_raw, AN, AN_raw,
+                    FS, MQ, MQRankSum, QD, ReadPosRankSum, InbreedingCoeff, n_alt_alleles, lcr, segdup)]
+      gdt <- merge(gdt, lof, by=c("CHROM", "POS", "REF", "ALT"))    
+      gdt[is.na(lcr), lcr:=0]
+      gdt[is.na(segdup), segdup:=0]
+      gdt[,inGnomad:=1]
+      out <- paste0("/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/strictAnnoFiltPassGnomad_chr", i, ".tsv")
+      fwrite(gdt, sep='\t', quo=F, row=F, na="NA", file=out)
+  }
+
+# read in/combine/write (doing it this way for memory purposes so R doesn't crash)
+  rm(list=ls())
+  dt <- c()
+  for (i in c(1:22, "X", "Y")) {
+      add <- paste0("/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/strictAnnoFiltPassGnomad_chr", i, ".tsv")
+      dt <- rbind(dt, fread(file=add))
+  }
+  out <- "/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/strictAnnoFiltPassGnomad.tsv"
+  fwrite(dt, sep='\t', quo=F, row=F, na="NA", file=out)
+  system("rm /sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/strictAnnoFiltPassGnomad_chr*")
+
+#+END_SRC
+
+
+* STEP 2 - MAKE A HELPER FILE | Make a file putting various things used downsteam (IDs, paths) in one place
+
+#+NAME: ASEReadCounter|make_id_mapper_file
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table)
+
+# rna helper
+  rna <- fread("/sc/arion/projects/psychgen/lbp/files/m1TableForLiharska2021_updated30JUNE2021.tsv")
+  rna <- rna[,.(SID=SAMPLE_NAME, IID_RNA=INDIVIDUAL_NAME, RNA_BAM=fqDirForLEL2021)]
+  rna[,IID_DNA:=gsub("_", "-", IID_RNA)]
+  for (i in 1:nrow(rna)){
+      x <- rna[i]$RNA_BAM
+      y <- system(paste("find", x, "-wholename *bam"), intern=T)
+      if (length(y)>1 | length(y)==0) {
+          print(i)
+      } else {
+          rna[i]$RNA_BAM <- y
+      }
+  }
+  i <- 322 #only problem path
+  rna[i]$RNA_BAM <- "/sc/arion/projects/psychgen2/lbp/data/RAW/rna/bulk/fromSema4/LBPSEMA4BRAIN107_reRUN/LBPSEMA4BRAIN107/RAPiD/bams/LBPSEMA4BRAIN107.bam"
+
+# wgs helper
+  dna <- fread("/sc/arion/projects/psychgen/lbp/files/wgs/LBP_WGS_VUMC_PATHS.tsv")
+  dna <- dna[,.(IID_DNA=ptid)]
+
+# wgs contaminated samples
+  ctm <- fread("/sc/arion/projects/psychgen/lbp/data/dna/wgs_VerifyBamID/combined_alpha.out")
+  dna <- dna[ !IID_DNA %in% ctm[alpha>0.02]$ptid ]
+
+# combine
+  rna <- rna[IID_DNA %in% dna$IID_DNA][,.(SID, IID_RNA, IID_DNA, RNA_BAM)]
+
+# add column for where vcf input will be 
+  rna[,WGS_VCF:=paste0("/sc/arion/projects/psychgen/lbp/data/dna/wgs_ASEReadCounterInput/", SID, ".vcf.gz")]
+
+# write
+  fout <- "/sc/arion/projects/psychgen/lbp/files/wgs/LBP_WGS_ASEReadCounter_HELPER.tsv"
+  fwrite(rna, sep="\t", quo=F, row=F,  col=T, na="NA", file=fout)
+
+#+END_SRC
+
+
+* STEP 3 - ASEReadCounter | PREPARE DATA FOR AND RUN ASEReadCounter 
+
+#+NAME: ASEReadCounter|make_vcf_input_for_ASEReadCounter_and_run_ASEReadCounter
+#+BEGIN_SRC shell
+
+# setup
+  SCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_lbp_run_ASEReadCounter.sh
+  HLP=/sc/arion/projects/psychgen/lbp/files/wgs/LBP_WGS_ASEReadCounter_HELPER.tsv
+  ODR=/sc/arion/projects/psychgen/lbp/data/dna/wgs_ASEReadCounterInput
+  RDR=/sc/arion/projects/psychgen/lbp/results/ASEReadCounter
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/ASEReadCounter
+  M1=/sc/arion/projects/psychgen/lbp/files/m1TableForLiharska2021_updated30JUNE2021.tsv 
+
+# run
+  cd ${SDR}
+  let n=1
+  echo "" | tail -n+2 > all
+  while read LINE
+  do
+    if [[ ${n} -gt 1 ]] 
+    then 
+      SID=`echo ${LINE} | awk '{print $1}'`
+      RID=`echo ${LINE} | awk '{print $2}'`
+      WID=`echo ${LINE} | awk '{print $3}'`
+      BAM=`echo ${LINE} | awk '{print $4}'`
+      echo ${SID} >> all
+      if [[ ! -f ${RDR}/${SID}.output.table.success ]]
+      then mybsub psychgen ${SID} 100000 12:00 premium 1 "sh ${SCRIPT} --iid-rna ${RID} --iid-wgs ${WID} --sid ${SID} --bam-rna ${BAM} --results-dir ${RDR}"
+      fi
+    fi
+    echo ${n}
+    let n=n+1
+  done < ${HLP}
+
+# check
+  cd ${SDR}
+  cat all | sort | uniq > x;mv x all
+  ls -1 *stdout | awk -F"." '{print $1}' | sort | uniq > sent
+  grep -m1 Success *stdout | awk -F":" '{print $1}' | awk -F"." '{print $1}' | sort | uniq > success
+  comm -23 all sent > unsent
+  comm -23 sent success > fail
+  wc -l {all,sent,unsent,success,fail}
+  #717 all
+  #717 sent
+  #  0 unsent
+  #710 success
+  #  7 fail 
+  cat fail | xargs -I VAR grep -i "memory usage" VAR.stdout | wc -l #6 ... LBPSEMA4BRAIN107 is the exception, fails due to runtime
+  grep -wf fail ${M1} | awk '{print $1, $NF}'
+  # LBPSEMA4BLOOD349 no_notable_issues
+  # LBPSEMA4BLOOD459 no_notable_issues
+  # LBPSEMA4BLOOD504 no_notable_issues
+  # LBPSEMA4BLOOD556 no_notable_issues
+  # LBPSEMA4BLOOD646 no_notable_issues
+  # LBPSEMA4BRAIN107 EV_RAPiD_run_initially_not_completed_because_fastq_massive|subsequently_completed_28MAY2021_but_not_in_LEL2021
+  # LBPSEMA4BRAIN378 fastq_in_two_deliveries|EV_RAPiD_run_on_one_fastq_delivery_because_other_massive
+  #
+  # Moving on with these 710 - why?
+  # - of the 7 fails, 5 are blood samples and our question here is about liv brain vs pm brain
+  # - of the 2 brain that fail, we have explanations (massive number of reads)
+   
+# clean up 
+  cd ${SDR}
+  for i in `cat success`
+  do rm -rf ${ODR}/${i}/
+  done
+  rm ${SDR}/*
+
+#+END_SRC
+
+
+* STEP 3 - ASEReadCounter | ADD LOFTEE AND GNOMAD ANNOTATIONS TO ASEReadCounter OUTPUT
+
+#+NAME: ASEReadCounter|add_loftee_and_gnomad_annotations_to_ASEReadCounter_output
+#+BEGIN_SRC shell
+
+# setup
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_lbp_process_ASEReadCounter.r
+  RDR=/sc/arion/projects/psychgen/lbp/results/ASEReadCounter
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/ASEReadCounter
+
+# run
+  cd ${SDR}
+  echo "" | tail -n+2 > all
+  for i in `ls ${RDR}/*.output.table.success`
+  do 
+    SID=`basename ${i} | awk -F"." '{print $1}'`
+    echo ${SID} >> all
+    if [[ ! -f ${RDR}/${SID}.output.table.gt10x.anno.success ]]
+    then mybsub psychgen ${SID} 150000 1:00 premium 1 "Rscript ${RSCRIPT} ${SID}"
+    fi
+  done
+
+# check
+  cd ${SDR}  
+  cat all | sort | uniq > x;mv x all
+  ls -1 *stdout | awk -F"." '{print $1}' | sort | uniq > sent
+  grep -m1 Success *stdout | awk -F":" '{print $1}' | awk -F"." '{print $1}' | sort | uniq > success
+  comm -23 all sent > unsent
+  comm -23 sent success > fail
+  ls ${RDR}/*.output.table.gt10x.anno.success | wc -l #708
+  wc -l {all,sent,unsent,success,fail}
+  #  710 all
+  #  710 sent
+  #    0 unsent
+  #  709 success
+  #    1 fail
+  #
+  # Which failed? Good ol LBPSEMA4BRAIN734 - it has a fake bam (see m1 table). Good to go
+
+# clean up 
+  rm -rf ${SDR}
+
+#+END_SRC
+
+
+* STEP 3 - ASEReadCounter | SUBSET ASEReadCounter OUTPUT FOR SITES ANNOTATED AS LOF
+
+#+NAME: ASEReadCounter|extract_lof_variant_from_annotated_ASEReadCounter_output
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table) 
+  setwd("/sc/arion/projects/psychgen/lbp/results/ASEReadCounter")
+
+# ASEReadCounter data
+  flist <- gsub(".success", "", Sys.glob("*output.table.gt10x.anno.success"))
+  dt <- c()
+  for (i in 1:length(flist)){
+      print(i)
+      add <- fread(flist[i], na=c("NA", ""))[!is.na(LOFTEE.LoF)]
+      dt <- rbind(dt, add)
+  }
+  saveRDS(dt, file="COMBINED.output.table.gt10x.anno.lof")
+
+#+END_SRC
+
+
+* STEP 4 | ANALYSES
+
+#+NAME: ASEReadCounter|analysis
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table) 
+  setwd("/sc/arion/projects/psychgen/lbp/results/ASEReadCounter")
+
+# read in master tracker
+  myf <- "/sc/arion/projects/psychgen/lbp/files/sema4_bulk_rna_sample_sheet/Bulk_RNA_Isolation_Mastertable_BRAINANDBLOOD_forSEMA4_awcFormatted.tsv"
+  mas <- fread(myf, na=c("NA",""))
+  mas <- mas[,.(SID=LBPSEMA4_ID, IID=iid, bank, age, sex, living, phe, collection_date, extraction_date, extraction_rin, brain, timepoint, extraction_batch)]
+
+# read in rnaseq data
+  rna <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS") 
+  ##mymeta <- mydata$covariates 
+
+# read in ASEReadCounter data
+  ase <- readRDS("COMBINED.output.table.gt10x.anno.lof")
+  ase <- ase[LOFTEE.SYMBOL_SOURCE=="HGNC"] # this captures vast majority, not clear what others mean
+  lcols <- grep("LOFT|GNOM", colnames(ase), value=T)
+  tmp <- data.table( column="NONE", n=uniqueN(ase[,.(CHROM, POS, REF, ALT, SID)]))
+  for (i in lcols){
+      mycol <- c("CHROM", "POS", "REF", "ALT", "SID", i)
+      add <- data.table( column=i, n=uniqueN(ase[,mycol,with=F]))
+      tmp <- rbind(tmp,add)
+  }
+  # 
+  # looking at tmp, can see which columns here we dont need right now sincxe goal is one annotation per variant
+  #
+  rmme <- c("LOFTEE.CDS_position", "LOFTEE.Protein_position", "LOFTEE.EXON", "LOFTEE.INTRON", 
+            "LOFTEE.LoF_info", "LOFTEE.cDNA_position", "LOFTEE.Feature", "LOFTEE.HGNC_ID", "LOFTEE.Allele",
+            "LOFTEE.SYMBOL_SOURCE", "LOFTEE.Amino_acids", "LOFTEE.Codons", "LOFTEE.LoF_flags", "LOFTEE.Consequence",
+            "LOFTEE.FLAGS", "LOFTEE.LoF_filter")
+  ase[, c(rmme):=NULL]
+  ase <- unique(ase)
+  # 
+  # remove cols with only 1 unique value
+  #
+  ase[,names(which(apply(ase, 2, uniqueN) == 1)):=NULL]
+  ase[,REF_AD:=NULL] #bug in earlier code, doesnt need to exist
+  ase[,ALT_AD:=NULL]
+  # 
+  # remove sites with >1 gene (not clear whats happening here, could be overlapping genes)
+  #
+  bad <- unique(ase[,.N,list(CHROM, POS, REF, ALT, LOFTEE.Gene)])[,.N,list(CHROM, POS, REF, ALT)][N>1,.(x=paste(CHROM, POS, REF, ALT))]$x
+  ase <- ase[!paste(CHROM, POS, REF, ALT) %in% bad]
+  ase <- ase[,list(LOFTEE.LoF=paste(LOFTEE.LoF, collapse="|")), by=list(CHROM, POS, REF, ALT, SID, REFCOUNT, ALTCOUNT, 
+                                                                        TOTCOUNT, AAF, ASE_REFCOUNT, ASE_ALTCOUNT, ASE_TOTCOUNT, 
+                                                                        ASE_AAF, LOFTEE.SYMBOL, LOFTEE.Gene, LOFTEE.STRAND,
+                                                                        GNOMAD.FILTER, GNOMAD.AC, GNOMAD.AC_raw, GNOMAD.AF, GNOMAD.AF_raw, 
+                                                                        GNOMAD.AN, GNOMAD.AN_raw, GNOMAD.FS, GNOMAD.MQ, GNOMAD.MQRankSum, 
+                                                                        GNOMAD.QD, GNOMAD.ReadPosRankSum, GNOMAD.InbreedingCoeff, 
+                                                                        GNOMAD.n_alt_alleles, GNOMAD.lcr, GNOMAD.segdup, GNOMAD.inGnomad)]
+  ase[grep("|",fixed=T,LOFTEE.LoF),LOFTEE.LoF:="BOTH"] 
+
+# merge meta and ase data
+  ase <- merge(ase, mas)
+
+# add pli info
+  map <- fread("~/gene_ids_ensembl2symbol_fromHUGO_10JUN2020.tsv", na=c("", "NA"))[,.(symbol=`Approved symbol`, gene=`Ensembl gene ID`)]
+  map <- map[!is.na(gene)]
+  pli <- fread("~/forweb_cleaned_exac_r03_march16_z_data_pLI.txt")[,.(symbol=gene, pli=pLI)]
+  pli <- merge(pli, map)[,.(LOFTEE.Gene=gene, pli)]
+  ase <- merge(ase, pli[!is.na(LOFTEE.Gene)], by="LOFTEE.Gene",all.x=T) 
+  ase[,pliGT0p9:=FALSE]
+  ase[pli>=0.9,pliGT0p9:=TRUE]
+
+# some results to quick and dirtily check if we have something here
+  median(ase[is.na(GNOMAD.AC)|GNOMAD.AF<=0.01]$ASE_AAF)
+  median(ase[is.na(GNOMAD.AC)|GNOMAD.AF<=0.001]$ASE_AAF)
+  median(ase[is.na(GNOMAD.AC)|GNOMAD.AF<=0.0001]$ASE_AAF)
+  median(ase[is.na(GNOMAD.AC)|GNOMAD.AF<=0.00001]$ASE_AAF)
+  median(ase[is.na(GNOMAD.AC)|GNOMAD.AF<=0.000001]$ASE_AAF)
+  median(ase[(is.na(GNOMAD.AC)|GNOMAD.AF<=0.000001) & living==1 & brain==1]$ASE_AAF) #[1] 0.3097776
+  median(ase[(is.na(GNOMAD.AC)|GNOMAD.AF<=0.000001) & living==0 & brain==1]$ASE_AAF) #[1] 0.4240741
+  median(ase[(is.na(GNOMAD.AC)|GNOMAD.AF<=0.000001) & living==1 & brain==0]$ASE_AAF) #[1] 0.3136324
+  median(ase[(is.na(GNOMAD.AC)|GNOMAD.AF<=0.000001) & living==1 & brain==1 & pliGT0p9==TRUE]$ASE_AAF) #[1] 0
+  median(ase[(is.na(GNOMAD.AC)|GNOMAD.AF<=0.000001) & living==0 & brain==1 & pliGT0p9==TRUE]$ASE_AAF) #[1] 0.3482143
+  median(ase[(is.na(GNOMAD.AC)|GNOMAD.AF<=0.000001) & living==1 & brain==0 & pliGT0p9==TRUE]$ASE_AAF) #[1] 0.1414474
+
+#+END_SRC
+
