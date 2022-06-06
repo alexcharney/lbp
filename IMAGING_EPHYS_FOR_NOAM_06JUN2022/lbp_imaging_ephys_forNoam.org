@@ -1,0 +1,2301 @@
+
+* NEUROIMAGING | CODE BLOCK 0 | Format data from Leo to make it omics-friendly
+
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table)
+  library(readxl)
+  library(stringr)
+  setwd("/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021")
+
+# master metadata
+  file1 <- "/sc/arion/projects/psychgen/lbp/files/sema4_bulk_rna_sample_sheet/Bulk_RNA_Isolation_Mastertable_BRAINANDBLOOD.xlsx"
+  ctypes <- c("text", rep("text", 14),"date","text","date","text",rep("numeric",4),"text","text")
+  met <- as.data.table(read_excel(file1, sheet=1, col_names = TRUE, col_types=ctypes,  na=c("NA","na","",".","n/a","N/A","unknown","89+")))
+  metr <- met[,.(sid=LBPSEMA4_ID, iid, tissue, bank)]
+  metr[tissue=="Skin", tissue:="SK_Blood"]
+  nrow(met) #[1] 796
+  uniqueN(met[,.(iid)]) #[1] 420
+  nrow(met[extraction_rin>4 & PLATE!="NOT_SENDING"]) #[1] 779
+  map <- met[extraction_rin>4 & PLATE!="NOT_SENDING",.(iid, sid=LBPSEMA4_ID)][grep("BRAIN",sid)]
+
+# day of scan
+  mydate <- unique(met[living=="Living" & extraction_rin>4 & PLATE!="NOT_SENDING",.(iid, date=as.Date(collection_date))][!is.na(date)])[,list(date=min(date)),iid]
+  mydate[,lbpday:=as.integer(date - min(date))]
+  saveRDS(mydate, file="dataForDream19JUL2021/dataForDream19JUL2021_covDay.RDS")
+
+# imaging data from leo
+  gmd <- as.data.table(read_excel("GM.xlsx"))
+  wmd <- as.data.table(read_excel("WM.xlsx"))
+  
+# lora rna seq data (final as of 19JUL2021)
+  lel <- readRDS("/sc/arion/projects/psychgen2/lbp/data/RAW/rna/bulk/fromSema4/CompiledData/lbp_allBatches_RAPiD_Covs-featureCounts-vobjDream-Resids-LivPmDE_FINALModel_onlyBRAIN_518Samples_Excluding-Outliers-MislabeledSamples-BadSamples_19JUL2021.RDS")
+
+# define covariates 
+  leo.cov <- c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+               "mymet_rna_conc_ngul", "RNASeqMetrics_PCT_INTRONIC_BASES", 
+               "RNASeqMetrics_PCT_CODING_BASES", "mymet_bank", "STAR_pct_of_reads_unmapped_other")
+  lel.cov <- c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+               "neuronal", "RNASeqMetrics_MEDIAN_3PRIME_BIAS", "RNASeqMetrics_PCT_MRNA_BASES", 
+               "mymet_depletionbatch", "InsertSizeMetrics_MEDIAN_INSERT_SIZE", 
+               "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR")
+  
+# format imaging data
+  colnames(gmd) <- gsub("PT_", "PT-", colnames(gmd))
+  colnames(wmd) <- gsub("PT_", "PT-", colnames(wmd))
+  colnames(gmd)[1] <- colnames(wmd)[1] <- "imagingFeature"
+  ##
+  ## gray matter
+  ##
+  gmi <- data.table(imagingFeature=gmd$imagingFeature)
+  gmi[grep("^lh",imagingFeature), imagingFeatureHemisphere:="L"]
+  gmi[grep("^rh",imagingFeature), imagingFeatureHemisphere:="R"]
+  gmi[grep("^Left_",imagingFeature), imagingFeatureHemisphere:="L"]
+  gmi[grep("^Right_",imagingFeature), imagingFeatureHemisphere:="R"]
+  gmi[grep("_area",imagingFeature), imagingFeatureType:="area"]
+  gmi[grep("_thickness",imagingFeature), imagingFeatureType:="thickness"]
+  gmi[grep("Vol",imagingFeature), imagingFeatureType:="volume"]
+  gmi[is.na(imagingFeatureType), imagingFeatureType:="volume"] #per leo, these 40 are all true volume/intracranial volume
+  gmi[,imagingFeatureStructure:=gsub("^lh_", "", imagingFeature)]
+  gmi[,imagingFeatureStructure:=gsub("^rh_", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^lh", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^rh", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^Left_", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("^Right_", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("_area", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=gsub("_thickness", "", imagingFeatureStructure)]
+  gmi[,imagingFeatureStructure:=tolower(imagingFeatureStructure)]
+  gmi[imagingFeatureStructure=="thalamus_proper",imagingFeatureStructure:="thalamus"]  #to match terms in white matter data
+  gmi[imagingFeatureStructure=="cc_central",imagingFeatureStructure:="corpuscallosum"]  #to match terms in white matter data
+  ##
+  ## white matter (dti)
+  ##
+  wmi <- data.table(imagingFeature=wmd$imagingFeature)
+  wmi[,c("imagingFeature1","imagingFeature2"):=tstrsplit(imagingFeature, split="_diff_")]
+  wmi[,imagingFeature2:=gsub("_diff", "", imagingFeature2)]
+  wmi[,imagingFeature1Structure:=imagingFeature1]
+  wmi[,imagingFeature2Structure:=imagingFeature2]
+  wmi[grep("^lh_",imagingFeature1), imagingFeature1Hemisphere:="L"]
+  wmi[grep("^rh_",imagingFeature1), imagingFeature1Hemisphere:="R"]
+  wmi[grep("^lh_",imagingFeature2), imagingFeature2Hemisphere:="L"]
+  wmi[grep("^rh_",imagingFeature2), imagingFeature2Hemisphere:="R"]
+  wmi[,imagingFeature1Structure:=gsub("^lh_", "", imagingFeature1Structure)]
+  wmi[,imagingFeature1Structure:=gsub("^rh_", "", imagingFeature1Structure)]
+  wmi[,imagingFeature2Structure:=gsub("^lh_", "", imagingFeature2Structure)]
+  wmi[,imagingFeature2Structure:=gsub("^rh_", "", imagingFeature2Structure)]
+  wmi[,imagingFeature2Structure:=gsub("^rh_", "", imagingFeature2Structure)]
+  wmi[imagingFeature1Structure=="corpuscallosum", imagingFeature1Hemisphere:=NA] #to match terms in the grey matter data
+  wmi[imagingFeature2Structure=="corpuscallosum", imagingFeature2Hemisphere:=NA] #to match terms in the grey matter data
+  tmp <- unique(gmi[,.(x=paste(imagingFeatureHemisphere, imagingFeatureStructure))]$x)
+  nrow(wmi[!imagingFeature1Structure %in% gmi$imagingFeatureStructure]) #[1] 0 ... ok good
+  nrow(wmi[!imagingFeature2Structure %in% gmi$imagingFeatureStructure]) #[1] 0
+  nrow(wmi[! paste(imagingFeature1Hemisphere, imagingFeature1Structure) %in% tmp]) #[1] 0 ... ok good
+  nrow(wmi[! paste(imagingFeature2Hemisphere, imagingFeature2Structure) %in% tmp]) #[1] 0
+  ##
+  ## make indices that connect grey and white features
+  ##
+  gmi[,imagingIndexGMF:=paste0("GMF",str_pad(.I-1, 3, pad = "0"))]
+  tmp <- unique(gmi[,.(imagingFeatureHemisphere, imagingFeatureStructure)])
+  tmp[,imagingIndexHS:=paste0("HS",str_pad(.I-1, 3, pad = "0"))]
+  gmi <- merge(gmi,tmp)
+  tm1 <- unique(gmi[,.(imagingFeature1Hemisphere=imagingFeatureHemisphere, imagingFeature1Structure=imagingFeatureStructure, imagingIndexHS1=imagingIndexHS)])
+  tm2 <- unique(gmi[,.(imagingFeature2Hemisphere=imagingFeatureHemisphere, imagingFeature2Structure=imagingFeatureStructure, imagingIndexHS2=imagingIndexHS)])
+  wmi[,imagingIndexWMF:=paste0("WMF",str_pad(.I-1, 4, pad = "0"))]
+  wmi <- merge(wmi, tm1)
+  wmi <- merge(wmi, tm2, by=c("imagingFeature2Hemisphere","imagingFeature2Structure"))
+  gmiOrd <- c("imagingIndexGMF", "imagingIndexHS", "imagingFeature", "imagingFeatureType", "imagingFeatureHemisphere", "imagingFeatureStructure")
+  wmiOrd <- c("imagingIndexWMF", "imagingIndexHS1", "imagingIndexHS2", "imagingFeature", 
+              "imagingFeature1", "imagingFeature2", 
+              "imagingFeature1Hemisphere", "imagingFeature2Hemisphere", 
+              "imagingFeature1Structure", "imagingFeature2Structure")
+  gmi <- gmi[,gmiOrd,with=F]
+  wmi <- wmi[,wmiOrd,with=F]
+  imagingMeta <- list("gm"=list("imaging"=gmi), "wm"=list("imaging"=wmi))
+
+# change names of imaging features in data for cleanliness
+  ##
+  ## gray
+  ##
+  gmd <- merge(gmd, gmi[,.(imagingFeature, imagingIndexGMF)])
+  gmd$imagingFeature <- NULL
+  gmdPpl <- colnames(gmd)[colnames(gmd) != "imagingIndexGMF"]
+  gmdf <- as.data.frame(gmd[,gmdPpl,with=F])
+  rownames(gmdf) <- gmd$imagingIndexGMF
+  gmt <- as.data.table(t(gmdf), keep.rownames=T)
+  colnames(gmt)[1] <- "iid"
+  nrow(gmt) == nrow(gmt[iid %in% map$iid]) #[1] TRUE
+  gmt <- merge(gmt, map)
+  imagingMeta$gm$sid2iid <- map[iid %in% gmt$iid]
+  gmt$iid <- NULL
+  gmtGmf <- colnames(gmt)[colnames(gmt) != "sid"]
+  gmtf <- as.data.frame(gmt[,gmtGmf,with=F])
+  rownames(gmtf) <- gmt$sid
+  gmtf <- as.data.frame(t(gmtf))
+  imagingMeta$gm$data <- gmtf
+  ##
+  ## white
+  ##  
+  wmd <- merge(wmd, wmi[,.(imagingFeature, imagingIndexWMF)])
+  wmd$imagingFeature <- NULL
+  wmdPpl <- colnames(wmd)[colnames(wmd) != "imagingIndexWMF"]
+  wmdf <- as.data.frame(wmd[,wmdPpl,with=F])
+  rownames(wmdf) <- wmd$imagingIndexWMF
+  wmt <- as.data.table(t(wmdf), keep.rownames=T)
+  colnames(wmt)[1] <- "iid"
+  nrow(wmt) == nrow(wmt[iid %in% map$iid]) #[1] FALSE ... there are 46 individuals with WM data but no rnaseq (these are mostly people enrolled since rnaseq)
+  wmt <- wmt[iid %in% map$iid]
+  wmt <- merge(wmt, map)
+  imagingMeta$wm$sid2iid <- map[iid %in% wmt$iid]
+  wmt$iid <- NULL
+  wmtWmf <- colnames(wmt)[colnames(wmt) != "sid"]
+  wmtf <- as.data.frame(wmt[,wmtWmf,with=F])
+  rownames(wmtf) <- wmt$sid
+  wmtf <- as.data.frame(t(wmtf))
+  imagingMeta$wm$data <- wmtf
+
+# define covariates 
+  imagingMeta$covariates <- list("leo"=c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+                                         "mymet_rna_conc_ngul", "RNASeqMetrics_PCT_INTRONIC_BASES", 
+                                         "RNASeqMetrics_PCT_CODING_BASES", "mymet_bank", "STAR_pct_of_reads_unmapped_other"),
+                                 "lel"=c("IID_ISMMS", "mymet_sex", "mymet_rin", 
+                                         "neuronal", "RNASeqMetrics_MEDIAN_3PRIME_BIAS", "RNASeqMetrics_PCT_MRNA_BASES", 
+                                         "mymet_depletionbatch", "InsertSizeMetrics_MEDIAN_INSERT_SIZE", 
+                                         "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR"))
+  imagingMeta$expressionData <- lel
+
+# write list of features
+  gmStatic <- names(which( apply(imagingMeta$gm$data, 1, var)  == 0 )) # features with no variance
+  wmStatic <- names(which( apply(imagingMeta$wm$data, 1, var)  == 0 ))
+  fList <- data.table(index=c(imagingMeta$gm$imaging$imagingIndexGMF, imagingMeta$wm$imaging$imagingIndexWMF))
+  fList <- fList[!index %in% c(gmStatic, wmStatic)]
+  fwrite(fList, row=F, col=F, quo=F, file="/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/imagingIndexList.txt")
+
+# correlate imaging features with one another
+  gmTmp <- as.data.table(t(imagingMeta$gm$data), keep.rownames=T)
+  wmTmp <- as.data.table(t(imagingMeta$wm$data), keep.rownames=T)
+  wmKep <- colnames(wmTmp)[!colnames(wmTmp) %in% wmStatic]
+  wmTmp <- wmTmp[,wmKep,with=F]
+  colnames(gmTmp)[1] <- "sid"
+  colnames(wmTmp)[1] <- "sid"
+  gmTmp <- merge(imagingMeta$gm$sid2iid, gmTmp, by="sid")
+  wmTmp <- merge(imagingMeta$wm$sid2iid, wmTmp, by="sid")
+  gmTmp[,sid:=NULL]
+  wmTmp[,sid:=NULL]
+  gmTmp <- unique(as.data.frame(gmTmp))
+  wmTmp <- unique(as.data.frame(wmTmp))
+  gwTmp <- merge(gmTmp, wmTmp, by="iid")
+  dim(gmTmp) #[1] 164 201
+  dim(wmTmp) #[1] 143 6475
+  dim(gwTmp) #[1] 143 6675
+  rownames(gmTmp) <- gmTmp$iid
+  rownames(wmTmp) <- wmTmp$iid
+  rownames(gwTmp) <- gwTmp$iid
+  gmTmp$iid <- NULL
+  wmTmp$iid <- NULL
+  gwTmp$iid <- NULL
+  gmCor <- cor(gmTmp)
+  wmCor <- cor(wmTmp)
+  gwCor <- cor(gwTmp)
+  imagingMeta$Corrs <- list("gm"=gmCor, "wm"=wmCor, "gw"=gwCor)
+
+# run pca to represent pfc as a covariate
+  gmTmp <- as.data.table(t(imagingMeta$gm$data), keep.rownames=T)
+  gmMet <- imagingMeta$gm$imaging
+  gmMap <- imagingMeta$gm$sid2iid
+  colnames(gmTmp)[1] <- "sid"
+  gmTmp <- merge(gmMap, gmTmp, by="sid")
+  gmTmp[,sid:=NULL]
+  gmTmp <- unique(as.data.frame(gmTmp))
+  dim(gmTmp) #[1] 164 201
+  rownames(gmTmp) <- gmTmp$iid
+  gmTmp$iid <- NULL
+  pfc <- c( "caudalmiddlefrontal", "lateralorbitofrontal", "medialorbitofrontal", 
+           "parsopercularis", "parsorbitalis", "parstriangularis", "rostralmiddlefrontal", 
+           "superiorfrontal", "frontalpole")
+  pfcAll <- gmMet[imagingFeatureStructure %in% pfc]$imagingIndexGMF
+  tmpAll <- gmTmp[,pfcAll]
+  pcaAll <- prcomp(tmpAll, scale=T)
+  pcdAll <- data.table(iid=rownames(pcaAll$x), pcaAll$x)[,.(iid, PFCPC=PC1)]
+
+# add indicators to metadata of pfc status
+  pfcAllGm <- gmMet[imagingFeatureStructure %in% pfc]$imagingIndexGMF
+  pfcAllWm <- wmMet[imagingFeature1Structure %in% pfc|imagingFeature2Structure %in% pfc]$imagingIndexWMF
+  imagingMeta$gm$imaging[,isPFC:=0]
+  imagingMeta$gm$imaging[imagingIndexGMF %in% pfcAllGm,isPFC:=1]
+  imagingMeta$wm$imaging[,isPFC:=0]
+  imagingMeta$wm$imaging[imagingIndexWMF %in% pfcAllWm,isPFC:=1]
+
+# indicate which features in t1 data are actually white matter features
+  gmMet[, isWhite:=0]
+  gmMet[grep("white|wm_", imagingFeatureStructure, ignore.case=T),isWhite:=1]
+
+# save as individual files (for memory issues)
+  saveRDS(imagingMeta$gm$imaging, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gm_metadata.RDS")
+  saveRDS(imagingMeta$gm$sid2iid, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gm_idmap.RDS")
+  saveRDS(imagingMeta$gm$data, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gm_data.RDS")
+  saveRDS(imagingMeta$wm$imaging, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_wm_metadata.RDS")
+  saveRDS(imagingMeta$wm$sid2iid, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_wm_idmap.RDS")
+  saveRDS(imagingMeta$wm$data, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_wm_data.RDS")
+  saveRDS(imagingMeta$Corrs$gm, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gm_corr.RDS")
+  saveRDS(imagingMeta$Corrs$wm, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_wm_corr.RDS")
+  saveRDS(imagingMeta$Corrs$gw, file="dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gw_corr.RDS")
+  saveRDS(imagingMeta$expressionData, file="dataForDream19JUL2021/dataForDream19JUL2021_expressionData.RDS")
+  saveRDS(imagingMeta$covariates, file="dataForDream19JUL2021/dataForDream19JUL2021_covariateData.RDS")
+  saveRDS(pcdAll, file="dataForDream19JUL2021/dataForDream19JUL2021_pfcPC.RDS")
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 1 | Get some basic counts (e.g., how many patients we have imaging data on)
+
+#+BEGIN_SRC R
+
+# setup 
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021")
+
+# read in data
+  gmMet <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gm_metadata.RDS")
+  gmMap <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gm_idmap.RDS")
+  gmDat <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_imagingData_gm_data.RDS")
+  wmMet <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_imagingData_wm_metadata.RDS")
+  wmMap <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_imagingData_wm_idmap.RDS")
+  wmDat <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_imagingData_wm_data.RDS")
+  exDat <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_expressionData.RDS")
+  exMet <- readRDS("dataForDream19JUL2021/dataForDream19JUL2021_covariateData.RDS")
+  gmStatic <- names(which( apply(gmDat, 1, var)  == 0 )) # features with no variance
+  wmStatic <- names(which( apply(wmDat, 1, var)  == 0 ))
+
+# individual counts
+  myiid <- unique(exDat$covariates[mymet_living==1,.(sid=SAMPLE_ISMMS, iid=IID_ISMMS, inWM="NoWM", inGM="NoGM")])
+  myiid[sid %in% colnames(wmDat), inWM:="WM"]
+  myiid[sid %in% colnames(gmDat), inGM:="GM"]
+  x1 <- unique(myiid[,.(iid, inWM, inGM)])
+  x2 <- unique(myiid[,.(sid, inWM, inGM)])
+  nrow(x1) #[1] 169 ... number of individuals with any neuroimaging data
+  nrow(x2) #[1] 275 ... number of samples from individuals with any neuroimaging data
+  table(x1$inWM, x1$inGM)
+    ##    
+    ##      GM NoGM
+    ##NoWM  21    7
+    ##WM   141    0
+    ##
+  table(x2$inWM, x2$inGM)
+    ##    
+    ##      GM NoGM
+    ##NoWM  32   10
+    ##WM   233    0
+    ##
+
+# number of genes 
+  nrow(exDat$vobjDream) #[1] 21635
+
+# number of imaging features we can analyze in expression space
+  nrow(wmMet[!imagingIndexWMF %in% wmStatic]) #[1] 6474
+  nrow(gmMet[!imagingIndexGMF %in% gmStatic]) #[1] 200
+  ##
+  ## ... 5 more features are dropped because not all models can run on them:
+  ##
+  system("cat /sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/features/CellInteractions/fail")
+  ##GMF199
+  ##WMF2180
+  ##WMF4022
+  ##WMF4048
+  ##WMF4059
+  ##
+  ## ... So, total counts are: 199 GM and 6470 WM
+
+# types of imaging features in grey matter data
+  gmMet[,.N,imagingFeatureType]
+  #   imagingFeatureType  N
+  #1:             volume 58
+  #2:               area 72
+  #3:          thickness 70
+
+# N samples with imaging (from the 275 LIV samples post-qc in LEL2022)
+  people <- exDat$covariates[mymet_postmortem==0,.(sid=SAMPLE_ISMMS, iid=IID_ISMMS, gm=FALSE, wm=FALSE)]
+  people[sid %in% colnames(gmDat), gm:=TRUE]
+  people[sid %in% colnames(wmDat), wm:=TRUE]
+  nrow(people) #[1] 275 in LEL2022
+  nrow(people[gm==TRUE]) #[1] 265 with gray matter data
+  nrow(people[wm==TRUE]) #[1] 233 with dti data
+  nrow(people[gm==TRUE & wm==TRUE]) #[1] 233 with gray matter and dti data
+  nrow(people[gm==FALSE & wm==TRUE]) #[1] 0 with dti who dont have grey matter data
+  nrow(people[gm==TRUE & wm==FALSE]) #[1] 32 with greay matter who dont have dti data
+  #
+  # now do same idea except count individuals instead of samples
+  #
+  uniqueN(people[,.(iid)]) #[1] 169
+  uniqueN(people[gm==TRUE,.(iid)]) #[1] 162
+  uniqueN(people[wm==TRUE,.(iid)]) #[1] 141
+  uniqueN(people[gm==TRUE & wm==TRUE,.(iid)]) #[1] 141
+  uniqueN(people[gm==FALSE & wm==TRUE,.(iid)]) #[1] 0
+  uniqueN(people[gm==TRUE & wm==FALSE,.(iid)]) #[1] 21
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 2 | Association between cell type fractions and imaging features
+
+#+BEGIN_SRC R
+##
+## To skip the code and just look at the output: 
+##
+##   deRes <- readRDS("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled/cellPropDreamRes.RDS")
+##
+
+# setup 
+  library(ggplot2)
+  library(ggthemes)
+  library(data.table)
+  library(foreach)
+  library(parallel)
+  library(doMC)
+  library(variancePartition)
+  options(cores = detectCores())
+  registerDoMC(16)
+  setwd("/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/dataForDream19JUL2021")
+
+# imaging data
+  gmdata <- readRDS("dataForDream19JUL2021_imagingData_gm_data.RDS")
+  wmdata <- readRDS("dataForDream19JUL2021_imagingData_wm_data.RDS")
+  cvdat2 <- readRDS("dataForDream19JUL2021_covDay.RDS")
+  cvdat3 <- readRDS("dataForDream19JUL2021_pfcPC.RDS")
+  gFeatures <- rownames(gmdata)
+  wFeatures <- rownames(wmdata)
+
+# expression/covariate data
+  exdata <- readRDS("dataForDream19JUL2021_expressionData.RDS")
+  exdata$covariates <- merge(exdata$covariates, cvdat2[,.(IID_ISMMS=iid, lbpday)], by="IID_ISMMS", all.x=T)
+  exdata$covariates <- merge(exdata$covariates, cvdat3[,.(IID_ISMMS=iid, PFCPC)], by="IID_ISMMS", all.x=T)
+
+# make formulas
+  formulas <- list()
+  cells <- c("AST", "ODC", "MG", "GABA", "GLU")
+  catVar <- paste(paste0("(1|", c("IID_ISMMS", "mymet_sex", "mymet_depletionbatch", "mymet_phe"), ")"), collapse=" + ")
+  numVar <- paste(c("mymet_age", "lbpday", "mymet_rin", "RNASeqMetrics_MEDIAN_3PRIME_BIAS",
+                    "RNASeqMetrics_PCT_MRNA_BASES", "InsertSizeMetrics_MEDIAN_INSERT_SIZE",
+                    "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR"), collapse=" + ")
+  cobj <- as.data.frame(exdata$covariates[,cells,with=F])
+  rownames(cobj) <- exdata$covariates$SAMPLE_ISMMS
+  cobj <- t(cobj)
+  cobjformula <- as.formula(paste0("~imagingData +", catVar, "+", numVar))
+
+# make covariate table
+  allVar <- c("IID_ISMMS", "mymet_sex", "mymet_depletionbatch", "mymet_phe",
+              "mymet_age", "lbpday", "mymet_rin", "RNASeqMetrics_MEDIAN_3PRIME_BIAS",
+              "RNASeqMetrics_PCT_MRNA_BASES", "InsertSizeMetrics_MEDIAN_INSERT_SIZE",
+              "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR")
+  numVar <- c("mymet_age", "lbpday", "mymet_rin", "RNASeqMetrics_MEDIAN_3PRIME_BIAS",
+              "RNASeqMetrics_PCT_MRNA_BASES", "InsertSizeMetrics_MEDIAN_INSERT_SIZE",
+              "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR")
+  met <- as.data.frame(exdata$covariates[,c(allVar),with=F])
+  for (i in numVar) {met[,i] <- scale(met[,i])}
+  rownames(met) <- exdata$covariates$SAMPLE_ISMMS
+
+# harmonize samples
+  out <- "/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled/cellPropDreamRes.RDS"
+  gwFeatures <- rbind( data.table(feature=gFeatures, featureGroup="g"), 
+                      data.table(feature=wFeatures, featureGroup="w") )
+  eSam <- rownames(met)
+  cSam <- colnames(cobj)
+  deRes <- c()
+  for (i in 1:nrow(gwFeatures)){
+      if (i %% 100 == 0 ) cat("\r",i,"\t\t")
+      myFeature <- gwFeatures[i]$feature
+      isGray <- myFeature %in% gFeatures
+      if (isGray){
+          imagingData <- as.data.frame(t(gmdata[myFeature,]))
+      } else {
+          imagingData <- as.data.frame(t(wmdata[myFeature,]))
+      }
+      iSam <- rownames(imagingData)
+      kSam <- iSam[iSam %in% eSam & iSam %in% cSam]
+      imagingData <- imagingData[kSam,,drop=F]
+      met2 <- met[kSam,]
+      cobj2 <- cobj[,kSam]
+      colnames(imagingData) <- "imagingData"
+      met2 <- cbind(met2, imagingData)
+      possibleError <- tryCatch(dfit <- dream( cobj2, cobjformula, met2, BPPARAM = MulticoreParam(5)), error=function(e) e)
+      if(!inherits(possibleError, "error")){
+          mycoef <- "imagingData"
+          de <- data.table(feature=myFeature, topTable(dfit, coef=mycoef, number=nrow(cobj2)), keep.rownames="cell")
+          deRes <- rbind(deRes,de)
+          saveRDS(deRes, file=out)
+      }
+  }
+  ##
+  ## ... takes overnight to run this across 6k features
+  ##
+  deRes[,adj.P.Val:=p.adjust(P.Value, "fdr")]
+  deRes <- merge(deRes, gmMeta[,.(feature=imagingIndexGMF,featureType=imagingFeatureType)], all.x=T)
+  deRes[is.na(featureType),featureType:="dti"]
+
+# save
+  saveRDS(deRes, file=out)
+
+# plot
+  pdf("~/www/figures/lbp/neuroimaging_cellTypePropDreamResults.pdf")
+    p <- ggplot(deRes, aes(logFC, fill=cell)) + geom_density(alpha=0.3) + theme_base() + facet_wrap(~featureType, scales="free")
+    show(p)
+  dev.off() 
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 3 | Run DE for each imaging feature
+
+#+BEGIN_SRC shell
+##
+## The Rscript runs on one imaging feature at a time and does the following:
+## - Runs DE using 3 models:
+##   (1) Covariates without neuronal fraction or the PFC-PCA variables
+##   (2) Covariates with neuronal fraction but without the PFC-PCA variables
+##   (3) Covariates with neuronal fraction and the PFC-PCA variables
+## - Tests for cell type marker enrichment in the DE results of each model
+
+# setup 
+  ml R/4.0.3
+  ils=/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/imagingIndexList.txt
+  scr=/sc/arion/work/charna02/scripts/lbp/neuroimaging_dream_de_lelModel_withCellTypeEnrichment.r
+  odr=/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/features
+
+# run
+  cd ${odr}
+  for i in `cat ${ils}`
+  do mybsub psychgen ${i} 5000 1:30 premium 6 "Rscript ${scr} ${i} TRUE ${odr}/${i}.tsv"
+  done
+
+# check
+  cd ${odr}
+  ls *.stdout | sort | uniq | sed s/'.stdout'/''/g > sent
+  fgrep -m1 Successfully *.stdout | awk -F":" '{print $1}' | sort | uniq | sed s/'.stdout'/''/g > success
+  comm -23 sent success | tr '.' ' ' | awk '{print $1}' > fail
+  wc -l ${ils} sent success fail
+  ##6674 /sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/imagingIndexList.txt
+  ##6674 sent
+  ##6672 success
+  ##   1 fail ... this is the one that fails when you add pfcCorr to the model, leaving for now
+
+# rerun fail
+  for i in `cat fail`
+  do mybsub psychgen ${i} 5000 1:30 premium 6 "Rscript ${scr} ${i} TRUE ${odr}/${i}.tsv"
+  done
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 4 | Run cell-type-specific DE for each imaging feature 
+
+#+BEGIN_SRC shell
+
+# setup 
+  ml R/4.0.3
+  ils=/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/imagingIndexList.txt
+  scr=/sc/arion/work/charna02/scripts/lbp/neuroimaging_dream_de_lelModel_withCellInteractions.r
+  odr=/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/features/CellInteractions
+  od2=/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/features
+
+# run
+  cd ${odr}
+  for i in `cat ${ils}`
+  do 
+    if [[ ! -d ${odr}/${i} ]]
+    then mkdir ${odr}/${i}
+    fi 
+    cd ${odr}/${i}
+    mybsub psychgen ${i} 5000 1:30 premium 6 "Rscript ${scr} ${i} ${odr}/${i}"
+  done
+
+# check
+  cd ${odr}
+  find ${odr}/ -wholename "*.stdout" | sort | uniq | sed s/'.stdout'/''/g > sent
+  cat sent | xargs -I x grep -l Success x.stdout | sed s/'.stdout'/''/g | sort | uniq > success
+  comm -23 sent success | tr '.' ' ' | awk -F "/" '{print $NF}' > fail
+  wc -l ${ils} sent success fail
+  ##6674 /sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/imagingIndexList.txt
+  ##6674 sent
+  ##6669 success
+  ##   5 fail ... these 5 are rank deficient for some models, excluding them
+
+# rerun fail
+  for i in `cat ${odr}/fail`
+  do 
+    if [[ ! -d ${odr}/${i} ]]
+    then mkdir ${odr}/${i}
+    fi 
+    cd ${odr}/${i}
+    mybsub psychgen ${i} 5000 2:30 premium 6 "Rscript ${scr} ${i} ${odr}/${i}"
+  done
+
+# list files
+  cd ${odr}
+  find ${odr}/ -wholename "*AST*" > ${odr}/ast.list &
+  find ${odr}/ -wholename "*ODC*" > ${odr}/odc.list &
+  find ${odr}/ -wholename "*MG*" > ${odr}/mg.list &
+  find ${odr}/ -wholename "*GLU*" > ${odr}/glu.list &
+  find ${odr}/ -wholename "*GABA*" > ${odr}/gaba.list &
+  find ${odr}/ -wholename "*PI1*" > ${odr}/pi1.list &
+  find ${od2}/ -wholename "*.noNeu.tsv" > ${odr}/nocell.list &
+  find ${od2}/ -wholename "*.noNeu.pfcCorr.tsv" > ${odr}/nocellpfccorr.list &
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 5 | Compile results of DE for each imaging feature
+
+#+BEGIN_SRC R
+##
+## To skip the code and just look at the output: 
+##
+##   grep("CellInteraction", Sys.glob("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled/*RDS"), invert=T, value=T)
+##
+
+CellInteraction
+
+# setup 
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(IHW)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/features")
+
+# list files
+  gfList1 <- Sys.glob("GMF???.tsv")
+  wfList1 <- Sys.glob("WMF????.tsv")
+  gfList2 <- Sys.glob("GMF???.noNeu.tsv")
+  wfList2 <- Sys.glob("WMF????.noNeu.tsv")
+  gfList3 <- Sys.glob("GMF???.noNeu.pfcCorr.tsv")
+  wfList3 <- Sys.glob("WMF????.noNeu.pfcCorr.tsv")
+  cfList0 <- Sys.glob("*.CellTypeEnrichment.tsv")
+  deList1 <- c(gfList1, wfList1)
+  deList2 <- c(gfList2, wfList2)
+  deList3 <- c(gfList3, wfList3)
+
+# prep matrices for compiling dream results
+  genes <- fread(deList1[1])$gene
+  empt1 <- matrix(0, nrow=length(genes), ncol=length(deList1))
+  empt2 <- matrix(0, nrow=length(genes), ncol=length(deList2))
+  empt3 <- matrix(0, nrow=length(genes), ncol=length(deList3))
+  mLst1 <- list("lfc" = empt1, "pvl" = empt1, "pad" = empt1)
+  mLst2 <- list("lfc" = empt2, "pvl" = empt2, "pad" = empt2)
+  mLst3 <- list("lfc" = empt3, "pvl" = empt3, "pad" = empt3)
+  for (i in names(mLst1)){
+      colnames(mLst1[[i]]) <- gsub(".tsv", "", deList1)
+      rownames(mLst1[[i]]) <- genes
+      colnames(mLst2[[i]]) <- gsub(".tsv", "", deList2)
+      rownames(mLst2[[i]]) <- genes
+      colnames(mLst3[[i]]) <- gsub(".tsv", "", deList3)
+      rownames(mLst3[[i]]) <- genes
+  }
+  rm(list=c("empt1","empt2","empt3"))
+
+# compile dream results
+  cnt <- 0
+  for (i in deList1){
+      if (cnt %% 100 == 0 ) cat("\r",cnt,"\t\t")
+      cnt <- cnt+1
+      imf <- gsub(".tsv", "", i)
+      cur <- fread(i)
+      cur <- cur[order(match(gene, genes))]
+      mLst1$lfc[,imf] <- cur$logFC
+      mLst1$pvl[,imf] <- cur$P.Value
+      mLst1$pad[,imf] <- cur$adj.P.Val
+      if ( length(grep(imf, deList2, value=T)) > 0 ){
+          j <- grep(imf, deList2, value=T)
+          im2 <- gsub(".tsv", "", j)
+          cr2 <- fread(j)
+          cr2 <- cr2[order(match(gene, genes))]
+          mLst2$lfc[,im2] <- cr2$logFC
+          mLst2$pvl[,im2] <- cr2$P.Value
+          mLst2$pad[,im2] <- cr2$adj.P.Val
+      }
+      if ( length(grep(imf, deList3, value=T)) > 0 ){
+          j <- grep(imf, deList3, value=T)
+          im3 <- gsub(".tsv", "", j)
+          cr3 <- fread(j)
+          cr3 <- cr3[order(match(gene, genes))]
+          mLst3$lfc[,im3] <- cr3$logFC
+          mLst3$pvl[,im3] <- cr3$P.Value
+          mLst3$pad[,im3] <- cr3$adj.P.Val
+      }
+  }
+
+# save compiled dream results
+  saveRDS(mLst1$lfc, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_lfc.RDS")
+  saveRDS(mLst1$pvl, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_pvl.RDS")
+  saveRDS(mLst1$pad, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_pad.RDS")
+  saveRDS(mLst2$lfc, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_lfc.RDS")
+  saveRDS(mLst2$pvl, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_pvl.RDS")
+  saveRDS(mLst2$pad, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_pad.RDS")
+  saveRDS(mLst3$lfc, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_lfc.RDS")
+  saveRDS(mLst3$pvl, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_pvl.RDS")
+  saveRDS(mLst3$pad, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_pad.RDS")
+
+# ihw pvalue adjustment - noNeu 
+  pvec <- c(mLst2$pvl) #dream pvals
+  apvec <- c(mLst2$pad) #dream adjust pvals
+  nvec <- unlist(lapply(colnames(mLst2$pvl),rep,nrow(mLst2$pvl))) #vector of features
+  myihw <- ihw(pvalues=pvec, covariates=as.factor(nvec), alpha=0.05, covariate_type="nominal")
+  xx <- data.table(name=nvec, dreamP=pvec, dreamPADJ=apvec)
+  yy <- as.data.table(myihw@df)
+  identical(yy$pvalue, xx$dreamP) #[1] TRUE
+  identical(as.character(yy$group), xx$name) #[1] TRUE
+  colnames(yy)[1] <- "dreamP"
+  yy[,dreamPADJ:=xx$dreamPADJ]
+  yy[,covariate:=NULL]
+  nrow(yy[dreamP<0.05]) #[1] 7914713
+  nrow(yy[weighted_pvalue<0.05]) #[1] 2193137
+  nrow(yy[dreamPADJ<0.05]) #[1] 208323
+  nrow(yy[adj_pvalue<0.05]) #[1] 255236
+  nrow(yy[adj_pvalue<0.05 & dreamPADJ<0.05]) #[1] 179794
+  sanityMtx <- matrix(yy$dreamP,nrow=nrow(mLst2$pvl)) #sanity check
+  colnames(sanityMtx) <- colnames(mLst2$pvl)
+  rownames(sanityMtx) <- rownames(mLst2$pvl)
+  identical(sanityMtx, mLst2$pvl) #[1] TRUE ... good
+  rm(sanityMtx)
+  ihwMtx <- matrix(yy$adj_pvalue,nrow=nrow(mLst2$pvl)) 
+  colnames(ihwMtx) <- colnames(mLst2$pvl)
+  rownames(ihwMtx) <- rownames(mLst2$pvl)
+  saveRDS(ihwMtx, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_ihw.RDS")
+
+# ihw pvalue adjustment - noNeu.pfcCorr
+  pvec <- c(mLst3$pvl) #dream pvals
+  apvec <- c(mLst3$pad) #dream adjust pvals
+  nvec <- unlist(lapply(colnames(mLst3$pvl),rep,nrow(mLst3$pvl))) #vector of features
+  myihw <- ihw(pvalues=pvec, covariates=as.factor(nvec), alpha=0.05, covariate_type="nominal")
+  xx <- data.table(name=nvec, dreamP=pvec, dreamPADJ=apvec)
+  yy <- as.data.table(myihw@df)
+  colnames(yy)[1] <- "dreamP"
+  yy[,dreamPADJ:=xx$dreamPADJ]
+  yy[,covariate:=NULL]
+  nrow(yy[dreamP<0.05]) #[1] 7716722
+  nrow(yy[weighted_pvalue<0.05]) #[1] 2151046
+  nrow(yy[dreamPADJ<0.05]) #[1] 186211
+  nrow(yy[adj_pvalue<0.05]) #[1] 241856
+  nrow(yy[adj_pvalue<0.05 & dreamPADJ<0.05]) #[1] 159106
+  ihwMtx <- matrix(yy$adj_pvalue,nrow=nrow(mLst3$pvl)) 
+  colnames(ihwMtx) <- colnames(mLst3$pvl)
+  rownames(ihwMtx) <- rownames(mLst3$pvl)
+  saveRDS(ihwMtx, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_ihw.RDS")
+
+# compile cell type enrichment results
+  cteRes <- c()
+  for (i in 1:length(cfList0)){
+      cat("\r\r", i, " ")
+      cteRes <- rbind(cteRes, fread(cfList0[i]))
+  }
+  cteRes[,logOR:=log(fisherOR)]
+  saveRDS(cteRes, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_CellTypeEnrichment.RDS")
+
+# correlate logFC signatures with one another
+  lfcCr1 <- cor(mLst1$lfc)
+  lfcCr2 <- cor(mLst2$lfc)
+  lfcCr3 <- cor(mLst3$lfc)
+  saveRDS(lfcCr1, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_lfcCorr.RDS")
+  saveRDS(lfcCr2, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_lfcCorr.RDS")
+  saveRDS(lfcCr3, file="../compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_lfcCorr.RDS")
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 6 | Compile results of cell-type-specific DE for each imaging feature
+
+#+BEGIN_SRC R
+##
+## To skip the code and just look at the output: 
+##
+##   grep("CellInteraction", Sys.glob("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled/*RDS"), value=T)
+##
+
+# setup 
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(IHW)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/features/CellInteractions")
+  outdir <- "/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled"
+
+# list models
+  models <- c("nocell", "nocellpfccorr", "ast", "odc", "mg", "glu", "gaba")
+
+# list files with de results
+  deLists <- paste0(models, ".list")
+  piList <- "pi1.list"
+  deLists <- lapply(deLists, function(x) fread(x, header=F)$V1)
+  names(deLists) <- models
+
+# list features with results for all models
+  iterator <- data.table(path=unlist(deLists))
+  iterator[grep("CellInteractions", path), model:=gsub(".tsv", "", fixed=T, basename(path))]
+  iterator[grep("pfcCor", path), model:="nocellpfccorr"]
+  iterator[grep("CellInteractions|pfcCor", path, invert=T), model:="nocell"]
+  iterator[model == "nocell", feature:=gsub(".noNeu.tsv", "", fixed=T, basename(path))]
+  iterator[model == "nocellpfccorr", feature:=gsub(".noNeu.pfcCorr.tsv", "", fixed=T, basename(path))]
+  iterator[grep("CellInteractions",path), feature:=basename(dirname(path))]
+  features <- iterator[,.N,feature][N==length(deLists)]$feature
+  length(features) #[1] 6669
+  iterator <- iterator[feature %in% features]
+  rm(list=("deLists"))
+
+# list genes in de results
+  genes <- fread(iterator[1]$path)$gene
+  length(genes) #[1] 21635
+
+# prep matrices for compiling de results
+  empty <- matrix(0, nrow=length(genes), ncol=length(features))
+  rownames(empty) <- genes
+  colnames(empty) <- features
+  avg <- empty
+
+# compile de results
+  for (i in models){
+      if (i=="nocell") {
+          pfx <- paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu")
+      } else if (i=="nocellpfccorr") {
+          pfx <- paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu")
+      } else {
+          pfx <- paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeuCellInteraction", toupper(i))
+      }
+      cnt <- 0
+      mList <- list("lfc" = empty, "pvl" = empty, "pad" = empty, "zvl"=empty, "tvl"=empty)
+      for (j in features){
+          if (cnt %% 100 == 0 ) cat("\r", i, cnt,"\t\t")
+          cnt <- cnt+1
+          cur <- fread(iterator[tolower(model)==i & feature==j]$path)
+          cur <- cur[order(match(gene, genes))]
+          mList$lfc[,j] <- cur$logFC
+          mList$pvl[,j] <- cur$P.Value
+          mList$pad[,j] <- cur$adj.P.Val
+          mList$zvl[,j] <- cur$z.std
+          mList$tvl[,j] <- cur$t
+          if (i==models[1]) avg[,j] <- cur$AveExpr
+      }
+      saveRDS(mList$lfc, file=paste0(pfx, "_lfc.RDS"))
+      saveRDS(mList$pvl, file=paste0(pfx, "_pvl.RDS"))
+      saveRDS(mList$pad, file=paste0(pfx, "_pad.RDS"))
+      saveRDS(mList$zvl, file=paste0(pfx, "_zvl.RDS"))
+      saveRDS(mList$tvl, file=paste0(pfx, "_tvl.RDS"))
+      if (i==models[1]) saveRDS(avg, file=paste0(pfx, "_avg.RDS"))
+      lfcCor <- cor(mList$lfc)
+      saveRDS(lfcCor, file=paste0(pfx, "_lfcCor.RDS"))
+  }
+
+# pairwise cell type comparisons
+  cellModels <- as.data.table(t(combn(c("ast", "odc", "mg", "glu", "gaba"), 2)))
+  for (i in 1:nrow(cellModels)) {
+      cell1 <- cellModels[i]$V1
+      cell2 <- cellModels[i]$V2
+      cat(cell1, cell2, '\n')
+      pfx1 <- paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeuCellInteraction", toupper(cell1))
+      pfx2 <- paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeuCellInteraction", toupper(cell2))
+      pfx3 <- paste0(pfx1, "vs", toupper(cell2))
+      lfc1 <- readRDS(paste0(pfx1, "_lfc.RDS"))
+      lfc2 <- readRDS(paste0(pfx2, "_lfc.RDS"))
+      if (identical(rownames(lfc1), rownames(lfc2)) & identical(colnames(lfc1), colnames(lfc2))){
+          res <- cor(lfc1,lfc2) # lfc1 columns in rows, lfc2 columns in columns
+          saveRDS(res, file=paste0(pfx3, "_lfcCor.RDS"))
+      }
+  }
+
+# pi1 results
+  pi1 <- fread("pi1.list", header=F)$V1
+  pi1Res <- c()
+  cnt <- 1
+  for (i in pi1){
+      cat("\r\r", cnt, " ")
+      cnt <- cnt+1
+      cur <- fread(i)
+      cur[,feature:=basename(dirname(i))]
+      add <- dcast(cur, feature~tolower(cell), value.var="pi1")
+      pi1Res <- rbind(pi1Res, add)
+  }
+  outFile <- paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeuCellInteraction_pi1.RDS")
+  saveRDS(pi1Res, fil=outFile)
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 7 | Run IHW pvalue correction approach on DE results (suggested by Ryan Thompson)
+
+#+BEGIN_SRC shell
+
+# setup 
+  ml R/4.0.3
+  scr=/sc/arion/work/charna02/scripts/lbp/neuroimaging_dream_IHW.r
+  odr=/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled
+  sth=/sc/arion/projects/psychgen/lbp/scratch
+
+# run
+  cd ${sth}
+  for i in MinusNeu PfcMinusNeu MinusNeuCellInteraction{AST,ODC,MG,GLU,GABA}
+  do
+    arg1=${odr}/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe${i}_pvl.RDS
+    arg2=${odr}/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe${i}_pad.RDS
+    arg3=${odr}/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe${i}_ihw.RDS
+    mybsub psychgen ihw_${i} 75000 12:00 private 1 "Rscript ${scr} ${arg1} ${arg2} ${arg3}"
+  done
+
+# check
+  cd ${sth}
+  ls ihw*.stdout | sed s/'.stdout'/''/g | sort | uniq > sent
+  grep -l -m1 Success ihw*.stdout | sed s/'.stdout'/''/g | sort | uniq > success
+  comm -23 sent success | tr '.' ' ' | awk -F "/" '{print $NF}' > fail
+  wc -l sent success fail
+  ## 7 sent
+  ## 7 success
+  ## 0 fail
+
+# rerun fail
+  cd ${sth}
+  for i in `cat fail | sed s/ihw_//g`
+  do
+    arg1=${odr}/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe${i}_pvl.RDS
+    arg2=${odr}/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe${i}_pad.RDS
+    arg3=${odr}/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe${i}_ihw.RDS
+    mybsub psychgen ihw_${i} 75000 12:00 private 1 "Rscript ${scr} ${arg1} ${arg2} ${arg3}"
+  done
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 8 | Compare how different models change the DE results 
+
+#+BEGIN_SRC R
+##
+## To skip the code and just look at the output: 
+##
+##   readRDS("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/pairwiseResults.RDS"))
+##
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(corrplot)
+  library(readxl)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/")
+  dDir <- "/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/LEO/dataForDream19JUL2021/"
+
+# imaging data
+  wmMeta <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_wm_metadata.RDS"))
+  gmMeta <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_gm_metadata.RDS"))
+  wmData <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_wm_data.RDS"))
+  gmData <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_gm_data.RDS"))
+  keepMe <- colnames(readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_wm_corr.RDS")))
+  gmCorr <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_gm_corr.RDS"))
+  gmType <- gmMeta[,.(imagingIndexGMF, imagingFeatureType)]
+  gmType[is.na(imagingFeatureType), imagingFeatureType:="unspecified"]
+  wmZero <- as.data.table(rowSums(wmData == 0)/ncol(wmData == 0), keep.rownames=T)[,.(imagingFeature=V1, PCTZERO=V2)]
+
+# dream results
+  mLst1 <- list( "lfc"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_lfc.RDS"),
+                "pvl"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_pvl.RDS"),
+                "pad"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_pad.RDS"))
+  mLst2 <- list( "lfc"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_lfc.RDS"),
+                "pvl"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_pvl.RDS"),
+                "pad"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_pad.RDS"),
+                "ihw"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_ihw.RDS"))               
+  mLst3 <- list( "lfc"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_lfc.RDS"),
+                "pvl"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_pvl.RDS"),
+                "pad"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_pad.RDS"),
+                "ihw"=readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_ihw.RDS"))               
+  lfcCr1 <- readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_lfcCorr.RDS")
+  lfcCr2 <- readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_lfcCorr.RDS")
+  lfcCr3 <- readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_lfcCorr.RDS")
+  colnames(lfcCr2) <- gsub(".noNeu", "", colnames(lfcCr2))
+  rownames(lfcCr2) <- gsub(".noNeu", "", rownames(lfcCr2))
+  colnames(lfcCr3) <- gsub(".noNeu.pfcCorr", "", colnames(lfcCr3))
+  rownames(lfcCr3) <- gsub(".noNeu.pfcCorr", "", rownames(lfcCr3))
+  cteRes <- readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe_CellTypeEnrichment.RDS")  
+  for (i in c("lfc", "pvl", "pad")){
+      colnames(mLst2[[i]]) <- gsub(".noNeu", "", colnames(mLst2[[i]]))
+      rownames(mLst2[[i]]) <- gsub(".noNeu", "", rownames(mLst2[[i]]))
+      colnames(mLst3[[i]]) <- gsub(".noNeu.pfcCorr", "", colnames(mLst3[[i]]))
+      rownames(mLst3[[i]]) <- gsub(".noNeu.pfcCorr", "", rownames(mLst3[[i]]))
+  }
+
+# assess pairs of features for each WM feature - initiate table
+  iPairs <- wmMeta[,.(WMF=imagingIndexWMF, HS1=imagingIndexHS1, HS2=imagingIndexHS2,
+                     H1=imagingFeature1Hemisphere, H2=imagingFeature2Hemisphere, 
+                     S1=imagingFeature1Structure, S2=imagingFeature2Structure)]
+  iPairs <- iPairs[WMF %in% keepMe]
+
+# assess pairs of features for each WM feature - add GM feature IDs
+  gmTmp <- gmMeta[imagingIndexHS %in% iPairs$HS1 | imagingIndexHS %in% iPairs$HS2]
+  gmTmp <- gmTmp[,.(GMF=imagingIndexGMF, HS=imagingIndexHS, GMFTYPE=imagingFeatureType)]
+  gmTmp <- dcast(gmTmp, HS~GMFTYPE, value.var="GMF")                    
+  gmTm2 <- copy(gmTmp)
+  colnames(gmTmp) <- c("HS1", "GMF1AREA", "GMF1THICKNESS", "GMF1VOLUME")
+  colnames(gmTm2) <- c("HS2", "GMF2AREA", "GMF2THICKNESS", "GMF2VOLUME")
+  iPairs <- merge(merge(iPairs, gmTmp, by="HS1"), gmTm2, by="HS2")
+
+# assess pairs of features for each WM feature - make helper table for populating main table
+  newCols <- c( "WMFMEAN", "GMF12AA", "GMF12TT", "GMF12AT", "GMF12TA", "GMF12VV",               
+               "GMF12AV", "GMF12TV", "GMF12VA", "GMF12VT", 
+               "GMF12XAA", "GMF12XTT", "GMF12XAT", "GMF12XTA", "GMF12XVV",                              
+               "GMF12XAV", "GMF12XTV", "GMF12XVA", "GMF12XVT")
+  newColsHelp <- data.table(newCol=grep("GMF", newCols, value=T), v1="", v2="") 
+  newColsHelp[grep("TT", newCol), v1:="GMF1THICKNESS"]
+  newColsHelp[grep("TT", newCol), v2:="GMF2THICKNESS"]
+  newColsHelp[grep("AA", newCol), v1:="GMF1AREA"]
+  newColsHelp[grep("AA", newCol), v2:="GMF2AREA"]
+  newColsHelp[grep("TA", newCol), v1:="GMF1THICKNESS"]
+  newColsHelp[grep("TA", newCol), v2:="GMF2AREA"]
+  newColsHelp[grep("AT", newCol), v1:="GMF1AREA"]
+  newColsHelp[grep("AT", newCol), v2:="GMF2THICKNESS"]
+  newColsHelp[grep("VV", newCol), v1:="GMF1VOLUME"]
+  newColsHelp[grep("VV", newCol), v2:="GMF2VOLUME"]
+  newColsHelp[grep("VA", newCol), v1:="GMF1VOLUME"]
+  newColsHelp[grep("VA", newCol), v2:="GMF2AREA"]
+  newColsHelp[grep("AV", newCol), v1:="GMF1AREA"]
+  newColsHelp[grep("AV", newCol), v2:="GMF2VOLUME"]
+  newColsHelp[grep("VT", newCol), v1:="GMF1VOLUME"]
+  newColsHelp[grep("VT", newCol), v2:="GMF2THICKNESS"]
+  newColsHelp[grep("TV", newCol), v1:="GMF1THICKNESS"]
+  newColsHelp[grep("TV", newCol), v2:="GMF2VOLUME"]
+  iPairm1 <- matrix(NA, nrow=nrow(iPairs), ncol=length(newCols))
+  rownames(iPairm1) <- iPairs$WMF
+  colnames(iPairm1) <- newCols
+  iPairm2 <- iPairm3 <- copy(iPairm1)
+
+# assess pairs of features for each WM feature - populate main table
+  for ( i in 1:nrow(iPairs)){
+      cat("\r\r", i)
+
+      ##populate DTI data
+      wmfName <- iPairs[i]$WMF
+      iPairm1[wmfName,"WMFMEAN"] <- rowMeans(wmData[wmfName,])[1]
+      iPairm2[wmfName,"WMFMEAN"] <- rowMeans(wmData[wmfName,])[1]
+      iPairm3[wmfName,"WMFMEAN"] <- rowMeans(wmData[wmfName,])[1]
+
+      ##determine which GM features are present for this pair
+      scheck1 <- sum(is.na(iPairs[i][,.(GMF1VOLUME,GMF1AREA,GMF1THICKNESS)]))
+      scheck2 <- sum(is.na(iPairs[i][,.(GMF2VOLUME,GMF2AREA,GMF2THICKNESS)]))
+      if (scheck1 == 1 & scheck2 == 1) {
+          gmCombos <- data.table( v1=c("GMF1AREA", "GMF1THICKNESS", "GMF1AREA", "GMF1THICKNESS"), 
+                                 v2=c("GMF2AREA", "GMF2THICKNESS", "GMF2THICKNESS", "GMF2AREA"))
+      } else if (scheck1 == 2 & scheck2 == 2) {
+          gmCombos <- data.table(v1=c("GMF1VOLUME"), v2=c("GMF2VOLUME"))
+      } else if (scheck1 == 1 & scheck2 == 2) { 
+          gmCombos <- data.table(v1=c("GMF1AREA", "GMF1THICKNESS"), v2=c("GMF2VOLUME", "GMF2VOLUME"))
+      } else if (scheck1 == 2 & scheck2 == 1) {
+          gmCombos <- data.table(v1=c("GMF1VOLUME", "GMF1VOLUME"), v2=c("GMF2AREA", "GMF2THICKNESS"))
+      }
+
+      ##iterate through GM feature combinations
+      for (j in 1:nrow(gmCombos)){
+
+          ##extract metadata
+          myx1 <- gmCombos[j]$v1
+          myx2 <- gmCombos[j]$v2
+          myv1 <- iPairs[i][[myx1]]
+          myv2 <- iPairs[i][[myx2]]
+          myn1 <- newColsHelp[v1==myx1 & v2==myx2][grep("X", newCol, invert=T)]$newCol
+          myn2 <- newColsHelp[v1==myx1 & v2==myx2][grep("X", newCol)]$newCol
+
+          ##add the correlation between GM features in imaging space
+          iPairm1[wmfName,myn1] <- gmCorr[myv1,myv2]
+          iPairm2[wmfName,myn1] <- gmCorr[myv1,myv2]
+          iPairm3[wmfName,myn1] <- gmCorr[myv1,myv2]
+
+          ##add the correlation between GM features in expression space
+          iPairm1[wmfName,myn2] <- lfcCr1[myv1,myv2]
+          iPairm2[wmfName,myn2] <- lfcCr2[myv1,myv2]
+          iPairm3[wmfName,myn2] <- lfcCr3[myv1,myv2]
+      }
+  }
+  iPairm1 <- as.data.table(iPairm1, keep.rownames="WMF")
+  iPairm2 <- as.data.table(iPairm2, keep.rownames="WMF")
+  iPairm3 <- as.data.table(iPairm3, keep.rownames="WMF")
+  iPairs1 <- merge(iPairs, iPairm1, by="WMF")
+  iPairs2 <- merge(iPairs, iPairm2, by="WMF")
+  iPairs3 <- merge(iPairs, iPairm3, by="WMF")
+  saveRDS(list("full"=iPairs1, "noNeu"=iPairs2, "noNeu.pfcCorr"=iPairs3),
+          file="/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/pairwiseResults.RDS")
+
+# correlation between gm/gm in imaging space and gm/gm in expression space
+  gmgmSim <- c()
+  checkCols <- c("GMF12AA", "GMF12TT", "GMF12AT", "GMF12TA", "GMF12NN",               
+               "GMF12AN", "GMF12TN", "GMF12NA", "GMF12NT")
+  pdf("~/www/figures/lbp/imagingData_GMIvsGME.pdf")
+    for (i in checkCols){
+        curDat1 <- iPairs1[!is.na(get(i))]
+        curDat2 <- iPairs2[!is.na(get(i))]
+        curDat3 <- iPairs3[!is.na(get(i))]
+        curRes1 <- cor.test(curDat1[[i]], curDat1[[gsub("12", "12X",i)]])
+        curRes2 <- cor.test(curDat2[[i]], curDat2[[gsub("12", "12X",i)]])
+        curRes3 <- cor.test(curDat3[[i]], curDat3[[gsub("12", "12X",i)]])
+        add1 <- data.table(model="full", type=i, corr=curRes1$estimate, p=curRes1$p.value)
+        add2 <- data.table(model="noNeu", type=i, corr=curRes2$estimate, p=curRes2$p.value)
+        add3 <- data.table(model="noNeu.pfcCorr", type=i, corr=curRes3$estimate, p=curRes3$p.value)
+        gmgmSim <- rbind(gmgmSim, add1, add2, add3)
+        p1 <- ggplot(curDat1, aes(get(i), get(gsub("12", "12X",i)))) + geom_point() + theme_base() + xlab("img") + ylab("exp") + ggtitle(paste("full", i))
+        p2 <- ggplot(curDat2, aes(get(i), get(gsub("12", "12X",i)))) + geom_point() + theme_base() + xlab("img") + ylab("exp") + ggtitle(paste("noNeu", i))
+        p3 <- ggplot(curDat3, aes(get(i), get(gsub("12", "12X",i)))) + geom_point() + theme_base() + xlab("img") + ylab("exp") + ggtitle(paste("noNeu.pfcCorr", i))
+        show(p1)
+        show(p2)
+        show(p3)
+    }
+  dev.off()
+
+# correlation between wm tract and gm regions in tract
+  wmgmSm1 <- c()
+  for (i in checkCols){
+      myf <- as.formula(paste0("WMFMEAN ~ ", i, " + ", gsub("12", "12X",i)))
+      rlm1 <- summary(lm(myf, data=iPairs1))
+      rlm2 <- summary(lm(myf, data=iPairs2))
+      rlm3 <- summary(lm(myf, data=iPairs3))
+      adx1 <- data.table(model="full", rlm1$coef, keep.rownames="var")[var!="(Intercept)"]
+      adx2 <- data.table(model="noNeu", rlm2$coef, keep.rownames="var")[var!="(Intercept)"]
+      adx3 <- data.table(model="noNeu.pfcCorr", rlm3$coef, keep.rownames="var")[var!="(Intercept)"]
+      wmgmSm1 <- rbind(wmgmSm1, adx1, adx2, adx3)
+  }
+
+# assess cell type enrichment results
+  tmp <- unique(cteRes[,.(degStatus, deRun)])
+  tm2 <- unique(cteRes[,.(cell)]$cell)
+  x1 <- dcast(cteRes, imagingFeatureIndex ~ degStatus + deRun + cell, value.var="fisherOR")
+  x2 <- dcast(cteRes, imagingFeatureIndex ~ degStatus + deRun + cell, value.var="fisherP")
+  cteRes <- merge(cteRes, gmType, by.x="imagingFeatureIndex", by.y="imagingIndexGMF", all.x=T)
+  cteRes[is.na(imagingFeatureType), imagingFeatureType:="dti"]
+  cteRes[grep("GMF", imagingFeatureIndex),tissue:="GM"]
+  cteRes[grep("WMF", imagingFeatureIndex),tissue:="WM"]
+  pdf("~/www/figures/lbp/imaging_cteResults.pdf", h=10, w=18)
+    for (i in unique(cteRes$imagingFeatureType)){    
+        pdat <- cteRes[imagingFeatureType==i][deRun=="noNeu"][grep("nom", degStatus)] ##[fisherP<0.05]
+        pdat[grep("Dw", degStatus), degStatus:="down"]
+        pdat[grep("Up", degStatus), degStatus:="up"]
+        p <- ggplot(pdat, aes(logOR,fill=cell)) + geom_histogram(alpha=0.3) + geom_vline(xintercept=0, col="red", lty=3, lwd=3) +
+            facet_wrap(degStatus~cell, scales="free_y", ncol=7) + theme_base() + ggtitle(i)
+        show(p)
+    }
+  dev.off()
+
+# number of degs by gene
+  gFeatures <- grep("GM", colnames(mLst1$lfc), value=T)
+  gFeaturs3 <- colnames(mLst3$lfc)[colnames(mLst3$lfc) %in% gFeatures]
+  wFeatures <- grep("WM", colnames(mLst1$lfc), value=T)
+  g1 <- as.data.table(rowSums(mLst1$pad[,gFeatures] < 0.05), keep.rownames=T)[,.(gene=V1, matter="GM", ndeg=V2, model="full")]
+  g2 <- as.data.table(rowSums(mLst2$pad[,gFeatures] < 0.05), keep.rownames=T)[,.(gene=V1, matter="GM", ndeg=V2, model="noNeu")]
+  g3 <- as.data.table(rowSums(mLst3$pad[,gFeaturs3] < 0.05), keep.rownames=T)[,.(gene=V1, matter="GM", ndeg=V2, model="noNeu.pfcCorr")]
+  w1 <- as.data.table(rowSums(mLst1$pad[,wFeatures] < 0.05), keep.rownames=T)[,.(gene=V1, matter="WM", ndeg=V2, model="full")]
+  w2 <- as.data.table(rowSums(mLst2$pad[,wFeatures] < 0.05), keep.rownames=T)[,.(gene=V1, matter="WM", ndeg=V2, model="noNeu")]
+  w3 <- as.data.table(rowSums(mLst3$pad[,wFeatures] < 0.05), keep.rownames=T)[,.(gene=V1, matter="WM", ndeg=V2, model="noNeu.pfcCorr")]
+  gCounts <- rbind(g1, g2, g3, w1, w2, w3)
+  gCountw <- dcast(gCounts, gene~matter+model, value.var="ndeg")
+  gCountf <- as.data.frame(gCountw[,2:ncol(gCountw)])
+  rownames(gCountf) <- gCountw$gene
+  cor(gCountf)
+  ##
+  ##                       GM_full    GM_noNeu GM_noNeu.pfcCorr     WM_full     WM_noNeu WM_noNeu.pfcCorr
+  ## GM_full           1.000000000  0.02251084       0.07060587  0.01992799 -0.009971572      -0.01213841
+  ## GM_noNeu          0.022510844  1.00000000      -0.00791049 -0.02551398  0.231839036       0.21103641
+  ## GM_noNeu.pfcCorr  0.070605869 -0.00791049       1.00000000  0.14270489 -0.076808020      -0.08098945
+  ## WM_full           0.019927989 -0.02551398       0.14270489  1.00000000  0.054529879       0.08790241
+  ## WM_noNeu         -0.009971572  0.23183904      -0.07680802  0.05452988  1.000000000       0.94699669
+  ## WM_noNeu.pfcCorr -0.012138414  0.21103641      -0.08098945  0.08790241  0.946996689       1.00000000
+
+# number of degs by imaging feature
+  f1 <- as.data.table(colSums(mLst1$pad < 0.05), keep.rownames=T)[,.(imagingFeature=V1, full=V2)] 
+  f2 <- as.data.table(colSums(mLst2$pad < 0.05), keep.rownames=T)[,.(imagingFeature=V1, noNeu=V2)]
+  f3 <- as.data.table(colSums(mLst3$pad < 0.05), keep.rownames=T)[,.(imagingFeature=V1, noNeu.pfcCorr=V2)]
+  ff <- merge(merge(f1, f2), f3, all=T) 
+
+# effect of adding pfcCorr
+  pfcEffect <- c()
+  sharedFeatures <- intersect(colnames(mLst2$lfc), colnames(mLst3$lfc))
+  identical(rownames(mLst2$lfc), rownames(mLst3$lfc)) #[1] TRUE
+  identical(rownames(mLst1$lfc), rownames(mLst3$lfc)) #[1] TRUE
+  for (i in sharedFeatures){
+      ab <- cor.test(mLst1$lfc[,i], mLst2$lfc[,i], method="spearman")
+      bc <- cor.test(mLst2$lfc[,i], mLst3$lfc[,i], method="spearman")
+      ac <- cor.test(mLst1$lfc[,i], mLst3$lfc[,i], method="spearman")
+      abe <- ab$estimate
+      abp <- ab$p.value
+      bce <- bc$estimate
+      bcp <- bc$p.value
+      ace <- ac$estimate
+      acp <- ac$p.value
+      add <- data.table(imagingFeature=i, full.noNeu.rho=abe, full.noNeu.p=abp, 
+                        noNeu.pfcCorr.rho=bce, noNeu.pfcCorr.p=bcp, 
+                        full.pfcCorr.rho=ace, full.pfcCorr.p=acp) 
+      pfcEffect <- rbind(pfcEffect, add)
+  }
+  pfcEffctL <- rbind(pfcEffect[,.(imagingFeature, rho=full.noNeu.rho, comparison="full.noNeu")],
+                     pfcEffect[,.(imagingFeature, rho=noNeu.pfcCorr.rho, comparison="noNeu.pfcCorr")],
+                     pfcEffect[,.(imagingFeature, rho=full.pfcCorr.rho, comparison="full.pfcCorr")])
+  pdf("~/www/figures/lbp/imaging_pfcCorrEffect.pdf")
+    ggplot(pfcEffctL, aes(rho, fill=comparison)) + geom_density(alpha=0.3) + theme_base()
+  dev.off()
+
+# pi1 values 
+  mypi1 <- c()
+  cnt <- 1
+  for (i in colnames(mLst1$pvl)){
+      cat('\r\r', cnt, ' ')
+      cnt <- cnt+1
+      pi1 <- 1 - qvalue(mLst1$pvl[,i])$pi0
+      pi2 <- 1 - qvalue(mLst2$pvl[,i])$pi0
+      if (i %in% colnames(mLst3$pv)) {
+          pi3 <- 1 - qvalue(mLst3$pvl[,i])$pi0
+      } else {
+          pi3 <- NA
+      }
+      add <- data.table(imagingFeature=i, full=pi1, noNeu=pi2, noNeu.pfcCorr=pi3)
+      mypi1 <- rbind(mypi1, add)
+  }
+  mypi1L <- rbind( mypi1[,.(imagingFeature, pi1=full, comparison="full")],
+                  mypi1[,.(imagingFeature, pi1=noNeu, comparison="noNeu")],
+                  mypi1[,.(imagingFeature, pi1=noNeu.pfcCorr, comparison="noNeu.pfcCorr")])
+  mypi1L[grep("GM", imagingFeature),matter:="GM"]
+  mypi1L[grep("WM", imagingFeature),matter:="WM"]
+  pdf("~/www/figures/lbp/imaging_pfcCorrEffectpi1.pdf", h=12, w=6)
+    ggplot(mypi1L, aes(pi1, fill=comparison)) + geom_histogram(alpha=0.3) + theme_base() + facet_wrap(~matter+comparison, scales="free_y", ncol=1) + 
+        theme(axis.text.x = element_text(angle = 90))
+  dev.off()
+ 
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 9 | Explore pi1 values of the DE analyses
+
+#+BEGIN_SRC R
+##
+## To skip the code and just look at the output: 
+##
+##   readRDS("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeuCellInteraction_pi1allModels.RDS")
+##
+
+# setup
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(corrplot)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/")
+
+# pi1 data for models with cell interactions
+  pi1 <- readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeuCellInteraction_pi1.RDS")
+
+# pi1 data for models without cell interactions
+  pvl1 <- readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeu_pvl.RDS")
+  pvl2 <- readRDS("compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeu_pvl.RDS")
+  mypi1 <- apply(pvl1, 2, function(x) 1 - qvalue(x)$pi0)
+  mypi2 <- apply(pvl2, 2, function(x) 1 - qvalue(x)$pi0)
+  mypi1 <- as.data.table(mypi1, keep.rownames="feature")[,.(feature,nocell.pi1=mypi1)]
+  mypi2 <- as.data.table(mypi2, keep.rownames="feature")[,.(feature,nocellpfccorr.pi1=mypi2)]
+  pi2 <- merge(mypi1, mypi2)
+
+# combine
+  mypi <- rbind( pi1[,.(feature, model="ast", pi1=ast)],
+                pi1[,.(feature, model="odc", pi1=odc)],
+                pi1[,.(feature, model="mg", pi1=mg)],
+                pi1[,.(feature, model="glu", pi1=glu)],
+                pi1[,.(feature, model="gaba", pi1=gaba)],
+                pi2[,.(feature, model="nocellpfccorr", pi1=nocellpfccorr.pi1)],
+                pi2[,.(feature, model="nocell", pi1=nocell.pi1)])
+  mypi[grep("GMF", feature),matter:="Grey"]
+  mypi[grep("WMF", feature),matter:="White"]
+  saveRDS(mypi, file="compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhePfcMinusNeuCellInteraction_pi1allModels.RDS")
+
+# correlation matrix of pi1 values
+  mycomps <- matrix(0,nrow=uniqueN(mypi$model), ncol=uniqueN(mypi$model))
+  rownames(mycomps) <- colnames(mycomps) <- unique(mypi$model)
+  mycompp <- mycomps
+  iter <- t(combn(unique(mypi$model),2))
+  for (i in 1:nrow(iter)){
+      x1 <- iter[i,1]
+      x2 <- iter[i,2]
+      d1 <- mypi[model==x1,.(feature,d1pi1=pi1)]
+      d2 <- mypi[model==x2,.(feature,d2pi1=pi1)]
+      mm <- merge(d1, d2, by="feature")
+      rs <- cor.test(mm$d1pi1, mm$d2pi1)
+      mycomps[x1,x2] <- mycomps[x2,x1] <- rs$estimate
+      mycompp[x1,x2] <- mycompp[x2,x1] <- rs$p.value
+  }
+  diag(mycomps) <- 1
+  diag(mycompp) <- 0
+
+# plot pi1 distributions
+  pdf("~/www/figures/lbp/neuroimaging_pi1_distributions.pdf", h=15, w=15)
+    p <- ggplot(mypi, aes(pi1, fill=matter)) + geom_histogram() + facet_wrap(~model+matter, scales="free") + theme_base()
+    show(p)
+  dev.off()
+  pdf("~/www/figures/lbp/neuroimaging_pi1_distribution_corelations.pdf")
+    corrplot(mycomps, order="hclus", hclust.method="ward.D", method="shade", 
+             addCoef.col="black", p.mat=mycompp, sig.level=0.05, pch.col="red")
+  dev.off()
+
+# characteristics of features with no signal
+  dir <- "/sc/arion/projects/psychgen/lbp/data/neuroimaging/GMWM19JUL2021/dataForDream19JUL2021/"
+  gmMet <- readRDS(paste0(dir, "dataForDream19JUL2021_imagingData_gm_metadata.RDS"))
+  gmMap <- readRDS(paste0(dir, "dataForDream19JUL2021_imagingData_gm_idmap.RDS"))
+  gmDat <- readRDS(paste0(dir, "dataForDream19JUL2021_imagingData_gm_data.RDS"))
+  wmMet <- readRDS(paste0(dir, "dataForDream19JUL2021_imagingData_wm_metadata.RDS"))
+  wmMap <- readRDS(paste0(dir, "dataForDream19JUL2021_imagingData_wm_idmap.RDS"))
+  wmDat <- readRDS(paste0(dir, "dataForDream19JUL2021_imagingData_wm_data.RDS"))
+  pfPCA <- readRDS(paste0(dir, "dataForDream19JUL2021_pfcPC.RDS"))
+  cvDay <- readRDS(paste0(dir, "dataForDream19JUL2021_covDay.RDS"))
+  exDat <- readRDS(paste0(dir, "dataForDream19JUL2021_expressionData.RDS"))
+  vpImg <- readRDS("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled/varPartImaging.RDS")
+  exCov <- merge(exDat$covariates, pfPCA[,.(IID_ISMMS=iid, PFCPC)], by="IID_ISMMS", all.x=T)
+  exCov <- merge(exDat$covariates, cvDay[,.(IID_ISMMS=iid, lbpday)], by="IID_ISMMS", all.x=T)
+  exVob <- exDat$vobjDream
+  gwInd <- unique(rbind(gmMet[,.(feature=imagingIndexGMF, isPFC, isWhite)], wmMet[,.(feature=imagingIndexWMF, isPFC, isWhite=1)]))
+  pi1main <- mypi[model=="nocell"|model=="nocellpfccorr"]
+  pi1main <- merge(pi1main, gwInd)
+  pi1main[,useMe:=0]
+  pi1main[isPFC==1 & model=="nocell",useMe:=1]
+  pi1main[isPFC==0 & model=="nocellpfccorr",useMe:=1]
+  pi1Zeros <- pi1main[useMe==1][pi1==0]$feature
+  gmMet[,pi1Zero:=0]
+  wmMet[,pi1Zero:=0]
+  gmMet[imagingIndexGMF %in% pi1Zeros,pi1Zero:=1]
+  wmMet[imagingIndexWMF %in% pi1Zeros,pi1Zero:=1]
+  gmMet <- gmMet[imagingIndexGMF %in% pi1main$feature]
+  wmMet <- wmMet[imagingIndexWMF %in% pi1main$feature]
+  wmMet <- merge(wmMet, vpImg, by.x="imagingIndexWMF", by.y="feature")
+  gmMet <- merge(gmMet, vpImg, by.x="imagingIndexGMF", by.y="feature")
+  helpMe <- c("pi1Zero", "age", "phe", "sex", "rac", "eth", "day", "glu", "gaba", "odc", "ast")
+  cor(wmMet[,helpMe,with=F])
+  cor(gmMet[,helpMe,with=F])
+  ##
+  ## ... maybe the time variable is causing the pi1 values of 0?
+  ##
+
+  pdf("~/www/figures/lbp/neuroimaging_pi1_distributions_by_pfcStatus.pdf")
+    p1 <- ggplot(pi1main[pi1>0 & useMe==1], aes(pi1, fill=as.factor(isPFC))) + geom_histogram(alpha=0.3) + theme_base()
+    p2 <- ggplot(pi1main[pi1>0 & model=="nocell"], aes(pi1, fill=as.factor(isPFC))) + geom_histogram(alpha=0.3) + theme_base()
+    p3 <- ggplot(pi1main[pi1>0 & model=="nocellpfccorr"], aes(pi1, fill=as.factor(isPFC))) + geom_histogram(alpha=0.3) + theme_base()
+    show(p1)
+    show(p2)
+    show(p3)
+  dev.off()
+
+  
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 10 | Visualize how imaging features are correlated to each other and covariates
+
+#+BEGIN_SRC R
+##
+## Note1: should rerun when Anina has compiled imaging feature covariate data (ie, imaging machine)
+## Note2: this code was never really completed, not sure it will be useful to Noam
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(readxl)
+  library(scales)
+  library(seriation)
+  library(BiocParallel)
+  library(variancePartition)
+  library(corrplot)
+  library(ggplot2)
+  library(ggthemes)
+  setwd("/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/dataForDream19JUL2021")
+
+# IMAGING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  ##imaging data
+  gmData <- readRDS("dataForDream19JUL2021_imagingData_gm_data.RDS")
+  wmData <- readRDS("dataForDream19JUL2021_imagingData_wm_data.RDS")
+  gmStatic <- names(which( apply(gmData, 1, var)  == 0 )) #invariant gm features 
+  wmStatic <- names(which( apply(wmData, 1, var)  == 0 )) #invariant gm features 
+  gmData <- gmData[!rownames(gmData) %in% gmStatic,]
+  wmData <- wmData[!rownames(wmData) %in% wmStatic,]
+  gmDat2 <- as.data.frame(t(gmData))
+  wmDat2 <- as.data.frame(t(wmData))
+  gwSamp <- intersect(rownames(gmDat2), rownames(wmDat2))
+  gwData <- cbind(gmDat2[gwSamp,], wmDat2[gwSamp,])
+
+  ##sid to iid map
+  gmMap <- readRDS("dataForDream19JUL2021_imagingData_gm_idmap.RDS") #gm sid to iid map
+  wmMap <- readRDS("dataForDream19JUL2021_imagingData_wm_idmap.RDS") #wm sid to iid map
+
+  ##imaging metadata
+  gmMeta <- readRDS("dataForDream19JUL2021_imagingData_gm_metadata.RDS")
+  wmMeta <- readRDS("dataForDream19JUL2021_imagingData_wm_metadata.RDS")
+
+  ##imaging feature correlation matrix
+  gwCorr <- readRDS("dataForDream19JUL2021_imagingData_gw_corr.RDS")
+
+# LBP METADATA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  ## load lbp metadata
+  mymet.file <- "/sc/arion/projects/psychgen/lbp/files/sema4_bulk_rna_sample_sheet/Bulk_RNA_Isolation_Mastertable_BRAINANDBLOOD.xlsx"
+  mymet.ctypes <- c("text", rep("text", 14),"date","text","date","text",rep("numeric",4),"text","text")
+  mymet.na <- c("NA","na","",".","n/a","N/A","unknown","89+")
+  mymet <- as.data.table(read_excel(mymet.file, sheet=1, col_names = TRUE, col_types=mymet.ctypes, na=mymet.na))
+  nrow(mymet) #[1] 796
+  uniqueN(mymet[,.(iid)]) #[1] 420
+  nrow(mymet[extraction_rin>4 & PLATE!="NOT_SENDING"]) #[1] 779  
+
+  ##derive date of lbp enrollment variable
+  mydate <- unique(mymet[living=="Living" & extraction_rin>4 & PLATE!="NOT_SENDING",.(iid, date=as.Date(collection_date))][!is.na(date)])
+  mydate <- mydate[,list(date=min(date)),iid]
+  mydate[,lbpday:=as.integer(date - min(date))]
+
+  ##extract cell type proportion variables
+  myneur <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")$covariates
+  myneur <- myneur[,.(sid=SAMPLE_ISMMS, iid=IID_ISMMS, GLU, GABA, MG, AST, ODC)]
+
+  ##combine into single matrix
+  mymet <- unique(mymet[,.(sid=LBPSEMA4_ID, iid, age, sex, race=tolower(race), ethnicity, phe)])
+  mymet <- mymet[!(iid=="PT-0105" & ethnicity=="NHL")]
+  mymet <- merge(mymet, mydate[,.(iid, lbpday)])
+  mymet <- merge(mymet, myneur, by=c("sid", "iid"))
+  mymet[,age:=gsub("+", "", age)]
+  mymet[,age2:=as.integer(age)]
+  mymet[,sex2:=0]
+  mymet[,race2:=0]
+  mymet[,ethnicity2:=0]
+  mymet[,phe2:=0]
+  mymet[sex=="F",sex2:=1]
+  mymet[race=="white",race2:=1]
+  mymet[ethnicity=="NHL",ethnicity2:=1]
+  mymet[phe=="PD",phe2:=1]
+  gwMet <- as.data.frame(mymet[,.(iid, age=age2, phe=phe2, sex=sex2, rac=race2, eth=ethnicity2, day=lbpday, glu=GLU, gaba=GABA, odc=ODC, ast=AST, mg=MG)])
+  rownames(gwMet) <- mymet$sid
+
+# show effect of day of scan on data
+  gwKep <- rownames(gwMet)[rownames(gwMet) %in% rownames(gwData)]
+  gwMet <- gwMet[gwKep,]
+  gwTmp <- gwData[gwKep,]
+  gwHlp <- cbind(gwMet, gwTmp)
+  ggplot(gwHlp, aes(day, GMF197)) + geom_point()
+  
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 11 | Make table that will be useful downstream for comparing imaging features to each other in different ways
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(corrplot)
+  library(readxl)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/")
+  dDir <- "/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/dataForDream19JUL2021/"
+
+# imaging features to keep 
+  models <- c("nocell", "nocellpfccorr", "ast", "odc", "mg", "glu", "gaba")
+  deLists <- paste0(models, ".list")
+  piList <- "pi1.list"
+  deLists <- lapply(deLists, function(x) fread(paste0("features/CellInteractions/",x), header=F)$V1)
+  names(deLists) <- models
+  iterator <- data.table(path=unlist(deLists))
+  iterator[grep("CellInteractions", path), model:=gsub(".tsv", "", fixed=T, basename(path))]
+  iterator[grep("pfcCor", path), model:="nocellpfccorr"]
+  iterator[grep("CellInteractions|pfcCor", path, invert=T), model:="nocell"]
+  iterator[model == "nocell", feature:=gsub(".noNeu.tsv", "", fixed=T, basename(path))]
+  iterator[model == "nocellpfccorr", feature:=gsub(".noNeu.pfcCorr.tsv", "", fixed=T, basename(path))]
+  iterator[grep("CellInteractions",path), feature:=basename(dirname(path))]
+  features <- iterator[,.N,feature][N==length(deLists)]$feature
+  length(features) #[1] 6669
+  
+# imaging data
+  wmMeta <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_wm_metadata.RDS"))
+  gmMeta <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_gm_metadata.RDS"))
+  wmData <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_wm_data.RDS"))
+  wmZero <- as.data.table(rowSums(wmData == 0)/ncol(wmData == 0), keep.rownames=T)[V2==1]$V1
+  gmData <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_gm_data.RDS"))
+  keepMe <- colnames(readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_wm_corr.RDS")))
+  keepMe <- intersect(keepMe, features)
+  keepMe <- keepMe[!keepMe %in% wmZero]
+  gmCorr <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_gm_corr.RDS"))
+  gmType <- gmMeta[,.(imagingIndexGMF, imagingFeatureType)]
+  ##
+  ## initiate table to assess relationbships between the two features in each WM feature
+  ##
+  iPairs <- wmMeta[,.(WMF=imagingIndexWMF, HS1=imagingIndexHS1, HS2=imagingIndexHS2,
+                     H1=imagingFeature1Hemisphere, H2=imagingFeature2Hemisphere, 
+                     S1=imagingFeature1Structure, S2=imagingFeature2Structure)]
+  iPairs <- iPairs[WMF %in% keepMe]
+  ##
+  ##add GM feature IDs
+  ##
+  gmTmp <- gmMeta[imagingIndexHS %in% iPairs$HS1 | imagingIndexHS %in% iPairs$HS2]
+  gmTmp <- gmTmp[,.(GMF=imagingIndexGMF, HS=imagingIndexHS, GMFTYPE=imagingFeatureType)]
+  gmTmp <- dcast(gmTmp, HS~GMFTYPE, value.var="GMF")                    
+  gmTm2 <- copy(gmTmp)
+  colnames(gmTmp) <- c("HS1", "GMF1AREA", "GMF1THICKNESS", "GMF1VOLUME")
+  colnames(gmTm2) <- c("HS2", "GMF2AREA", "GMF2THICKNESS", "GMF2VOLUME")
+  iPairs <- merge(merge(iPairs, gmTmp, by="HS1"), gmTm2, by="HS2")
+  ##
+  ##make helper table for populating main table
+  ##
+  newCols <- c( "WMFMEAN", "GMF12AA", "GMF12TT", "GMF12AT", "GMF12TA", "GMF12VV",               
+               "GMF12AV", "GMF12TV", "GMF12VA", "GMF12VT", 
+               "GMF12XAA", "GMF12XTT", "GMF12XAT", "GMF12XTA", "GMF12XVV",                              
+               "GMF12XAV", "GMF12XTV", "GMF12XVA", "GMF12XVT")
+  newColsHelp <- data.table(newCol=grep("GMF", newCols, value=T), v1="", v2="") 
+  newColsHelp[grep("TT", newCol), v1:="GMF1THICKNESS"]
+  newColsHelp[grep("TT", newCol), v2:="GMF2THICKNESS"]
+  newColsHelp[grep("AA", newCol), v1:="GMF1AREA"]
+  newColsHelp[grep("AA", newCol), v2:="GMF2AREA"]
+  newColsHelp[grep("TA", newCol), v1:="GMF1THICKNESS"]
+  newColsHelp[grep("TA", newCol), v2:="GMF2AREA"]
+  newColsHelp[grep("AT", newCol), v1:="GMF1AREA"]
+  newColsHelp[grep("AT", newCol), v2:="GMF2THICKNESS"]
+  newColsHelp[grep("VV", newCol), v1:="GMF1VOLUME"]
+  newColsHelp[grep("VV", newCol), v2:="GMF2VOLUME"]
+  newColsHelp[grep("VA", newCol), v1:="GMF1VOLUME"]
+  newColsHelp[grep("VA", newCol), v2:="GMF2AREA"]
+  newColsHelp[grep("AV", newCol), v1:="GMF1AREA"]
+  newColsHelp[grep("AV", newCol), v2:="GMF2VOLUME"]
+  newColsHelp[grep("VT", newCol), v1:="GMF1VOLUME"]
+  newColsHelp[grep("VT", newCol), v2:="GMF2THICKNESS"]
+  newColsHelp[grep("TV", newCol), v1:="GMF1THICKNESS"]
+  newColsHelp[grep("TV", newCol), v2:="GMF2VOLUME"]
+
+# list paths to files with corrleation between logFC values
+  pfx <- "compiled/resultsFromDream19JUL2021_lelRecipePlusAgeDayPheMinusNeuCellInteraction"
+  sfx <- "_lfcCor.RDS"
+  lfcCorHelp <- data.table(path=Sys.glob("compiled/*_lfcCor.RDS"))
+  lfcCorHelp[grep("PheMinusNeu_lfcCor", path), model:="nocell"]
+  lfcCorHelp[grep("PfcMinusNeu_lfcCor", path), model:="nocellpfccorr"]
+  lfcCorHelp[grep("CellInteractionAST_lfcCor", path), model:="ast"]
+  lfcCorHelp[grep("CellInteractionODC_lfcCor", path), model:="odc"]
+  lfcCorHelp[grep("CellInteractionMG_lfcCor", path), model:="mg"]
+  lfcCorHelp[grep("CellInteractionGLU_lfcCor", path), model:="glu"]
+  lfcCorHelp[grep("CellInteractionGABA_lfcCor", path), model:="gaba"]
+  lfcCorHelp[is.na(model), model:=tolower(gsub("vs", "_vs_", gsub(sfx, "", gsub(pfx, "", path))))]
+
+# assess pairs of features for each WM feature - populate main table
+  empty <- matrix(NA, nrow=nrow(iPairs), ncol=length(newCols))
+  rownames(empty) <- iPairs$WMF
+  colnames(empty) <- newCols
+  iPairm <- lapply (lfcCorHelp$model, function(x) x=empty)
+  names(iPairm) <- lfcCorHelp$model
+  for (m in lfcCorHelp$model){
+
+      ## read in de results
+      lfcCor <- readRDS(lfcCorHelp[model==m]$path)
+
+      ## iterate through wm features
+      for ( i in 1:nrow(iPairs)){
+          cat("\r\r", m, i, " ")
+
+          ##determine which GM features are present for this pair (for any feature, possibilities are volume only or area & thickness)
+          scheck1 <- sum(is.na(iPairs[i][,.(GMF1VOLUME,GMF1AREA,GMF1THICKNESS)]))
+          scheck2 <- sum(is.na(iPairs[i][,.(GMF2VOLUME,GMF2AREA,GMF2THICKNESS)]))
+          if (scheck1 == 1 & scheck2 == 1) {
+              gmCombos <- data.table( v1=c("GMF1AREA", "GMF1THICKNESS", "GMF1AREA", "GMF1THICKNESS"), 
+                                     v2=c("GMF2AREA", "GMF2THICKNESS", "GMF2THICKNESS", "GMF2AREA"))
+          } else if (scheck1 == 2 & scheck2 == 2) {
+              gmCombos <- data.table(v1=c("GMF1VOLUME"), v2=c("GMF2VOLUME"))
+          } else if (scheck1 == 1 & scheck2 == 2) { 
+              gmCombos <- data.table(v1=c("GMF1AREA", "GMF1THICKNESS"), v2=c("GMF2VOLUME", "GMF2VOLUME"))
+          } else if (scheck1 == 2 & scheck2 == 1) {
+              gmCombos <- data.table(v1=c("GMF1VOLUME", "GMF1VOLUME"), v2=c("GMF2AREA", "GMF2THICKNESS"))
+          }
+          
+          ##populate DTI data
+          wmfName <- iPairs[i]$WMF
+          iPairm[[m]][wmfName,"WMFMEAN"] <- rowMeans(wmData[wmfName,])[1]
+
+          ##iterate through GM feature combinations
+          for (j in 1:nrow(gmCombos)){
+
+              ##extract metadata
+              myx1 <- gmCombos[j]$v1
+              myx2 <- gmCombos[j]$v2
+              myv1 <- iPairs[i][[myx1]]
+              myv2 <- iPairs[i][[myx2]]
+              myn1 <- newColsHelp[v1==myx1 & v2==myx2][grep("X", newCol, invert=T)]$newCol
+              myn2 <- newColsHelp[v1==myx1 & v2==myx2][grep("X", newCol)]$newCol
+              
+              ##add the correlation between GM features in imaging space
+              iPairm[[m]][wmfName,myn1] <- gmCorr[myv1,myv2]
+
+              ##add the correlation between GM features in expression space
+              iPairm[[m]][wmfName,myn2] <- lfcCor[myv1,myv2]
+          }
+      }
+  }
+  iPairm <- lapply(iPairm, function(x) as.data.table(x, keep.rownames="WMF"))
+  for (i in 2:length(iPairm)){iPairm[[i]] <- iPairm[[i]][,c("WMF", paste0("GMF12X", c("AA", "TT", "AT", "TA", "VV", "AV", "TV", "VA", "VT"))),with=F]}
+  for (i in 2:length(iPairm)){colnames(iPairm[[i]])[2:ncol(iPairm[[i]])] <- paste(colnames(iPairm[[i]])[2:ncol(iPairm[[i]])], names(iPairm)[i], sep=".")}
+  colnames(iPairm[[1]])[12:ncol(iPairm[[1]])] <- paste(colnames(iPairm[[1]])[12:ncol(iPairm[[1]])], names(iPairm)[1], sep=".")
+  for (i in 1:length(iPairm)){
+      if (i ==1){
+          iPairmMerge <- iPairm[[i]]
+      } else {
+          iPairmMerge <- merge(iPairmMerge, iPairm[[i]], by="WMF")
+      }
+  }
+  iPairs <- merge(iPairs, iPairmMerge, by="WMF")
+  saveRDS(iPairs, file="/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/pairwiseResultsCellInteraction.RDS")
+
+#+END_SRC 
+
+
+* NEUROIMAGING | CODE BLOCK 12 | Compare grey matter features to each other using imaging and expression data
+
+#+NAME: WIP_correlate_gm_features_in_imaging_and_expression_space
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(corrplot)
+  library(readxl)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/")
+  dDir <- "/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/dataForDream19JUL2021/"
+
+# wm pairs table
+  iPairs <- readRDS("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/pairwiseResultsCellInteraction.RDS")
+
+# correlation between gm/gm in imaging space and gm/gm in expression space
+  models <- unique(tstrsplit(grep("X", colnames(iPairs), value=T), split=".", fixed=T, keep=2L)[[1]])
+  gmgmSim <- c()
+  checkCols <- c( "GMF12AA", "GMF12TT", "GMF12AT", "GMF12TA", "GMF12VV",               
+                 "GMF12AV", "GMF12TV", "GMF12VA", "GMF12VT")
+  pdf("~/www/figures/lbp/imagingData_GMIvsGME_selectedModel.pdf")
+  for (i in checkCols){
+      curDat <- iPairs[!is.na(get(i))]
+      for (j in models){
+          curRes <- cor.test(curDat[[i]], curDat[[paste(gsub("12", "12X",i), j, sep=".")]])
+          add <- data.table(model=j, type=i, corr=curRes$estimate, p=curRes$p.value)
+          gmgmSim <- rbind(gmgmSim,add)
+          p <- ggplot(curDat, aes(get(i), get(paste(gsub("12", "12X",i), j, sep=".")))) + geom_point() + theme_base() + xlab("img") + ylab("exp") + ggtitle(paste(i, j))
+          show(p)
+      }
+  } 
+  dev.off()
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 13 | Explore how DTI components and DE signatures are related to each other 
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(corrplot)
+  library(readxl)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/")
+  dDir <- "/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/dataForDream19JUL2021/"
+
+# wm pairs table
+  iPairs <- readRDS("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/pairwiseResultsCellInteraction.RDS")
+
+# correlation between wm tract and gm regions in tract
+  models <- unique(tstrsplit(grep("X", colnames(iPairs), value=T), split=".", fixed=T, keep=2L)[[1]])
+  models <- grep("vs", models, value=T, invert=T)
+  checkCols <- c( "GMF12AA", "GMF12TT", "GMF12AT", "GMF12TA", "GMF12VV",               
+                 "GMF12AV", "GMF12TV", "GMF12VA", "GMF12VT")
+  wmgmSim <- c()
+  for (i in checkCols){
+      for (j in models){
+          myf <- as.formula(paste0("WMFMEAN ~ ", i, " + ", paste(gsub("12", "12X",i), j, sep=".")))
+          rlm <- summary(lm(myf, data=iPairs))
+          adx <- data.table(model=j, rlm$coef, keep.rownames="var")[var!="(Intercept)"]
+          wmgmSim <- rbind(wmgmSim, adx)
+      }
+  }
+  colnames(wmgmSim) <- c("model", "var", "est", "se", "t", "p")
+  wmgmSim[,comparisontype:=tstrsplit(gsub("GMF12", "", gsub("X","",var)), split=".", fixed=T, keep=1L)]
+  wmgmSim[grep("X", var, invert=T),vartype:="Imaging"]
+  wmgmSim[grep("X", var),vartype:="Expression"]
+  pdf("~/www/figures/lbp/imagingData_wm_imaging_vs_expression.pdf")
+    p <- ggplot(wmgmSim, aes(-log10(p), fill=vartype)) + geom_density(alpha=0.3) + theme_base() + facet_wrap(~comparisontype)
+    show(p)
+  dev.off()
+  wmgmSm2 = wmgmSim[vartype=="Expression"]
+  wmgmSm2[,padj:=p.adjust(p, "fdr")]
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 14 | Count how often each gene is a DEG across imaging features
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(corrplot)
+  library(readxl)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/")
+  dDir <- "/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/dataForDream19JUL2021/"
+  outdir <- "/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled"
+
+# de models 
+  models <- c("nocell", "nocellpfccorr", "ast", "odc", "mg", "glu", "gaba")
+  modelsmap <- c("MinusNeu", "PfcMinusNeu", paste0("MinusNeuCellInteraction", c("AST", "ODC", "MG", "GLU", "GABA")))
+
+# imaging features to keep 
+  deLists <- paste0(models, ".list")
+  piList <- "pi1.list"
+  deLists <- lapply(deLists, function(x) fread(paste0("features/CellInteractions/",x), header=F)$V1)
+  names(deLists) <- models
+  iterator <- data.table(path=unlist(deLists))
+  iterator[grep("CellInteractions", path), model:=gsub(".tsv", "", fixed=T, basename(path))]
+  iterator[grep("pfcCor", path), model:="nocellpfccorr"]
+  iterator[grep("CellInteractions|pfcCor", path, invert=T), model:="nocell"]
+  iterator[model == "nocell", feature:=gsub(".noNeu.tsv", "", fixed=T, basename(path))]
+  iterator[model == "nocellpfccorr", feature:=gsub(".noNeu.pfcCorr.tsv", "", fixed=T, basename(path))]
+  iterator[grep("CellInteractions",path), feature:=basename(dirname(path))]
+  features <- iterator[,.N,feature][N==length(deLists)]$feature
+  length(features) #[1] 6669
+  gFeatures <- grep("GM", features, value=T)
+  wFeatures <- grep("WM", features, value=T)
+
+# get gene level counts
+  gCounts <- c()
+  for (i in 1:length(models)){  
+      print(i)
+      lfc <- readRDS(paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe", modelsmap[i], "_lfc.RDS"))
+      pad <- readRDS(paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe", modelsmap[i], "_pad.RDS"))
+      if (identical(rownames(lfc), rownames(pad)) & identical(colnames(lfc), colnames(pad)) ){
+          up <- pad < 0.05 & lfc > 0 
+          dw <- pad < 0.05 & lfc < 0 
+          gUp <- as.data.table(rowSums(up[,gFeatures]), keep.rownames=T)[,.(gene=V1, direction="up", matter="gm", ndeg=V2, model=models[i])]
+          gDw <- as.data.table(rowSums(dw[,gFeatures]), keep.rownames=T)[,.(gene=V1, direction="dw", matter="gm", ndeg=V2, model=models[i])]
+          wUp <- as.data.table(rowSums(up[,wFeatures]), keep.rownames=T)[,.(gene=V1, direction="up", matter="wm", ndeg=V2, model=models[i])]
+          wDw <- as.data.table(rowSums(dw[,wFeatures]), keep.rownames=T)[,.(gene=V1, direction="dw", matter="wm", ndeg=V2, model=models[i])]
+          gCounts <- rbind(gCounts, gUp, gDw, wUp, wDw)
+      }
+  }
+
+# save
+  saveRDS(gCounts, file="/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/geneLevelCounts.RDS")
+
+# plot 
+  gCountw <- dcast(gCounts[grep("cell", model, invert=T)], gene~model+matter+direction, value.var="ndeg")
+  gCountf <- as.data.frame(gCountw[,2:ncol(gCountw)])
+  rownames(gCountf) <- gCountw$gene
+  pdt <- cor(gCountf, method="spearman")
+  pdf("~/www/figures/lbp/neuroimaging_geneCount_correlations.pdf", h=20, w=20)
+    ##corrplot(pdt, order="hclus", hclust.method="ward.D", method="shade", addCoef.col="black")
+    corrplot(pdt, order="hclus", hclust.method="ward.D", method="circle", tl.cex=4, tl.col="black")
+  dev.off()
+
+#+END_SRC
+
+
+* NEUROIMAGING | CODE BLOCK 15 | Count number of DEGs across imaging features 
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(corrplot)
+  library(readxl)
+  library(qvalue)
+  setwd("/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/")
+  dDir <- "/sc/arion/projects/psychgen/lbp/data/neuroimaging/LEO/GMWM19JUL2021/dataForDream19JUL2021/"
+  outdir <- "/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/compiled"
+
+# de models 
+  models <- c("nocell", "nocellpfccorr", "ast", "odc", "mg", "glu", "gaba")
+  modelsmap <- c("MinusNeu", "PfcMinusNeu", paste0("MinusNeuCellInteraction", c("AST", "ODC", "MG", "GLU", "GABA")))
+
+# imaging data
+  wmMeta <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_wm_metadata.RDS"))
+  gmMeta <- readRDS(paste0(dDir, "dataForDream19JUL2021_imagingData_gm_metadata.RDS"))
+
+# imaging features to keep 
+  deLists <- paste0(models, ".list")
+  piList <- "pi1.list"
+  deLists <- lapply(deLists, function(x) fread(paste0("features/CellInteractions/",x), header=F)$V1)
+  names(deLists) <- models
+  iterator <- data.table(path=unlist(deLists))
+  iterator[grep("CellInteractions", path), model:=gsub(".tsv", "", fixed=T, basename(path))]
+  iterator[grep("pfcCor", path), model:="nocellpfccorr"]
+  iterator[grep("CellInteractions|pfcCor", path, invert=T), model:="nocell"]
+  iterator[model == "nocell", feature:=gsub(".noNeu.tsv", "", fixed=T, basename(path))]
+  iterator[model == "nocellpfccorr", feature:=gsub(".noNeu.pfcCorr.tsv", "", fixed=T, basename(path))]
+  iterator[grep("CellInteractions",path), feature:=basename(dirname(path))]
+  features <- iterator[,.N,feature][N==length(deLists)]$feature
+  length(features) #[1] 6669
+  gFeatures <- grep("GM", features, value=T)
+  wFeatures <- grep("WM", features, value=T)
+
+# get gene level counts
+  fCounts <- c()
+  for (i in 1:length(models)){  
+      print(i)
+      lfc <- readRDS(paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe", modelsmap[i], "_lfc.RDS"))
+      pad <- readRDS(paste0(outdir, "/resultsFromDream19JUL2021_lelRecipePlusAgeDayPhe", modelsmap[i], "_pad.RDS"))
+      if (identical(rownames(lfc), rownames(pad)) & identical(colnames(lfc), colnames(pad)) ){
+          up <- pad < 0.05 & lfc > 0 
+          dw <- pad < 0.05 & lfc < 0 
+          fUp <- as.data.table(colSums(up), keep.rownames=T)[,.(feature=V1, direction="up", ndeg=V2, model=models[i])]
+          fDw <- as.data.table(colSums(dw), keep.rownames=T)[,.(feature=V1, direction="dw", ndeg=V2, model=models[i])]
+          fCounts <- rbind(fCounts, fUp, fDw)
+      }
+  }
+
+# save
+  saveRDS( fCounts, file="/sc/arion/projects/psychgen/lbp/results/neuroimaging/awcDreamTest/featureLevelCounts.RDS")
+
+# plot
+  gfCounts <- merge(fCounts, gmMeta[,.(feature=imagingIndexGMF, imagingFeatureType)])[grep("cell",model,invert=T)]
+  wfCounts <- merge(fCounts, wmMeta[,.(feature=imagingIndexWMF, imagingFeatureType="dti")])[grep("cell",model,invert=T)]
+  gwfCounts <- rbind(gfCounts,wfCounts)
+  x1 <- gwfCounts[,list(ndeg=sum(ndeg)), by=list(model, imagingFeatureType, direction)]
+  x2 <- gwfCounts[,list(ntot=sum(ndeg)), by=list(imagingFeatureType, direction)]
+  x3 <- merge(x1, x2) 
+  x3[,pctdeg:=ndeg/ntot]
+  x3[,model:=factor(model, levels=c("glu","gaba","ast","odc","mg"))]
+  x3[,direction:=factor(direction, levels=c("up","dw"))]
+  x3[model %in% c("glu","gaba"),class:="neu"]
+  x3[!model %in% c("glu","gaba"),class:="gli"]
+  ord <- x3[direction=="up"][,list(pctdeg=sum(pctdeg)),list(imagingFeatureType,class)][class=="neu"][order(pctdeg)]$imagingFeatureType
+  x3[,imagingFeatureType:=factor(imagingFeatureType, levels=ord)]
+  pdf("~/www/figures/lbp/neuroimaging_featureCount_gm_dist.pdf", h=7, w=8)
+    ggplot(x3, aes(direction, pctdeg, fill=model)) + geom_col(col="black") + 
+        facet_wrap(~imagingFeatureType, nrow=1) + theme_base() + 
+        scale_fill_manual(values=c("ivory2","ivory3","lightpink1","lightpink2","lightpink3"))
+  dev.off()
+
+#+END_SRC
+
+
+* EPHYS | CODE BLOCK 1 | Run DE in RNAseq for STN measures only
+
+#+BEGIN_SRC R
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  suppressMessages(library(qvalue))
+  suppressMessages(library(corrplot))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+
+# expression and covariates data
+  lbp <- readRDS("/sc/arion/projects/psychgen2/lbp/data/RAW/rna/bulk/fromSema4/CompiledData/lbp_allBatches_RAPiD_Covs-featureCounts-vobjDream-Resids-LivPmDE_FINALModel_onlyBRAIN_518Samples_Excluding-Outliers-MislabeledSamples-BadSamples_19JUL2021.RDS")
+  met <- lbp$covariates
+  vob <- lbp$vobjDream
+
+# proteomics data
+  setwd("/sc/arion/projects/psychgen/lbp/data/proteomics") 
+  pmt <- readRDS("./LBP_Proteomics_fromLbpTeam_toWeipingMa_15MAR2022/fullCovTable_awcParsed.RDS")
+  pro <- readRDS("./LBP_Proteomics_fromWeipingMa_toLbpTeam_01APR2022/Data/20220214_MSSM_Living_Brain_Tissue_Global_34MPs_Combined_impute_awcParsed.RDS")
+  pmt <- pmt[BERG_ReplicateNumber==1]
+  pmt[SINAI_LivingStatus=="living",dePhe:="LIV"]
+  pmt[SINAI_LivingStatus=="postmortem",dePhe:="PM"]
+  pmt <- as.data.frame(pmt)
+  rownames(pmt) <- pmt$SINAI_SampleDataID
+  pro <- pro[,rownames(pmt)]
+
+# valentine ephys data
+  val <- fread("/sc/arion/projects/psychgen/lbp/data/mer/valentine_saezRotation_STN_25MAY2022.txt")
+  val <- val[,c("patient_id", "region_side", "theta_CF", "theta_PW", "theta_BW", 
+                "alpha_CF", "alpha_PW", "alpha_BW", "beta_CF", "beta_PW", "beta_BW", 
+                "lgamma_CF", "lgamma_PW", "lgamma_BW", "Rsquare", "error", "exponent", 
+                "offset", "depth_mm", "duration_sec"), with=F]
+  val[grep("Right", region_side), region_side:="right"]
+  val[grep("Left", region_side), region_side:="left"]
+  colnames(val) <- c( "iid", "hemisphere", "theta_CF", "theta_PW", "theta_BW", 
+                     "alpha_CF", "alpha_PW", "alpha_BW", "beta_CF", "beta_PW", "beta_BW", 
+                     "gamma_CF", "gamma_PW", "gamma_BW", "Rsquare", "error", "exponent", 
+                     "offset", "depth_mm", "duration_sec")
+
+# clean up val 
+  val <- val[,.(iid, hemisphere, theta=theta_PW, alpha=alpha_PW, beta=beta_PW, gamma=gamma_PW, exponent)]
+  val[is.na(alpha), alpha := 0]
+  val[is.na(beta), beta := 0]
+  val[is.na(gamma), gamma := 0]
+  val[is.na(theta), theta := 0]
+  iter <- val[,.N,list(iid,hemisphere)]
+  clean <- c()
+  for (i in 1:nrow(iter)){
+      v1 <- iter[i]$iid
+      v2 <- iter[i]$hemisphere
+      v3 <- iter[i]$N
+      if (v3 == 1){
+          add <- val[iid==v1 & hemisphere==v2]
+      } else {
+          cur <- val[iid==v1 & hemisphere==v2]
+          add <- data.table( iid=v1, hemisphere=v2, alpha=median(cur$alpha), 
+                            beta=median(cur$beta), gamma=median(cur$gamma), theta=median(cur$theta),
+                            exponent=median(cur$exponent))
+      }
+      clean <- rbind(clean, add)
+  }
+  saveRDS(list("original"=val, "clean"=clean), file="/sc/arion/projects/psychgen/lbp/data/mer/valentine_saezRotation_STN_25MAY2022.RDS")
+
+# merge ephys data with covariates
+  phe <- merge(met, clean, by.x=c("IID_ISMMS","mymet_timepoint"), by.y=c("iid","hemisphere")) 
+
+# formulas
+  form1 <- ~ alpha + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form2 <- ~ beta + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form3 <- ~ gamma + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form4 <- ~ theta + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form5 <- ~ exponent + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+
+# run de
+  pheStn <- as.data.frame(phe)
+  rownames(pheStn) <- pheStn$SAMPLE_ISMMS
+  vobStn <- vob[,rownames(pheStn)]
+  fitStnA <- dream( vobStn, form1, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnB <- dream( vobStn, form2, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnG <- dream( vobStn, form3, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnT <- dream( vobStn, form4, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnE <- dream( vobStn, form5, pheStn, BPPARAM = MulticoreParam(5) )
+  deStnA <- topTable( fitStnA, coef="alpha", number=nrow(vobStn) )
+  deStnB <- topTable( fitStnB, coef="beta", number=nrow(vobStn) )
+  deStnG <- topTable( fitStnG, coef="gamma", number=nrow(vobStn) )
+  deStnT <- topTable( fitStnT, coef="theta", number=nrow(vobStn) )
+  deStnE <- topTable( fitStnE, coef="exponent", number=nrow(vobStn) )
+  deStnA <- data.table(gene = rownames(deStnA), deStnA)
+  deStnB <- data.table(gene = rownames(deStnB), deStnB)
+  deStnG <- data.table(gene = rownames(deStnG), deStnG)
+  deStnT <- data.table(gene = rownames(deStnT), deStnT)
+  deStnE <- data.table(gene = rownames(deStnE), deStnE)
+  myres <- list( "alpha"=deStnA, "beta"=deStnB, "gamma"=deStnG, "theta"=deStnT, "exponent"=deStnE)
+  saveRDS(myres, file="/sc/arion/projects/psychgen/lbp/results/mer/mer_rnaseq_de_valentineMerData_25MAY2022.RDS")
+
+# check output of de
+  mypi1 <- c()
+  for (i in names(myres)){
+      curRes <- myres[[i]]
+      curPi1 <- 1 - qvalue(curRes$P.Value)$pi0 
+      add <- data.table( ephysVar=i, pi1=curPi1, nNomDEG=nrow(curRes[P.Value<0.05]), nSigDEG=nrow(curRes[adj.P.Val<0.05]))
+      mypi1 <- rbind(mypi1, add)
+  }
+  mypi1
+
+# which genes?
+  tmp <- myres$exponent[order(logFC)]
+  tmp[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+  map <- fread("~/gene_ids_ensembl2symbol_fromHUGO_10JUN2020.tsv", na=c("","NA"), col.names=c("symbol", "gene"))
+
+#+END_SRC
+
+
+* EPHYS | CODE BLOCK 2 | Run DE in protein for STN measures only
+
+#+BEGIN_SRC R
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  suppressMessages(library(qvalue))
+  suppressMessages(library(corrplot))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+  setwd("/sc/arion/projects/psychgen/lbp/data/proteomics") 
+
+# proteomics data
+  met <- readRDS("./LBP_Proteomics_fromLbpTeam_toWeipingMa_15MAR2022/fullCovTable_awcParsed.RDS")
+  vob <- readRDS("./LBP_Proteomics_fromWeipingMa_toLbpTeam_01APR2022/Data/20220214_MSSM_Living_Brain_Tissue_Global_34MPs_Combined_impute_awcParsed.RDS")
+  met <- met[BERG_ReplicateNumber==1]
+
+# valentine ephys data
+  clean <- readRDS("/sc/arion/projects/psychgen/lbp/data/mer/valentine_saezRotation_STN_25MAY2022.RDS")$clean
+
+# merge ephys data with covariates
+  phe <- merge(met, clean, by.x=c("SINAI_IID","SINAI_HEMISPHERE"), by.y=c("iid","hemisphere")) 
+
+# formulas
+  form1 <- ~ alpha + 
+            (1|SINAI_Sex) + (1|SINAI_IID) + (1|BERG_PDMP) + RNA_PercentNeuronal
+  form2 <- ~ beta + 
+            (1|SINAI_Sex) + (1|SINAI_IID) + (1|BERG_PDMP) + RNA_PercentNeuronal
+  form3 <- ~ gamma + 
+            (1|SINAI_Sex) + (1|SINAI_IID) + (1|BERG_PDMP) + RNA_PercentNeuronal
+  form4 <- ~ theta + 
+            (1|SINAI_Sex) + (1|SINAI_IID) + (1|BERG_PDMP) + RNA_PercentNeuronal
+  form5 <- ~ exponent + 
+            (1|SINAI_Sex) + (1|SINAI_IID) + (1|BERG_PDMP) + RNA_PercentNeuronal
+
+# run de
+  pheStn <- as.data.frame(phe)
+  rownames(pheStn) <- pheStn$SINAI_SampleDataID
+  vobStn <- vob[,rownames(pheStn)]
+  dim(vobStn)  #[1] 6415   63
+  fitStnA <- dream( vobStn, form1, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnB <- dream( vobStn, form2, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnG <- dream( vobStn, form3, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnT <- dream( vobStn, form4, pheStn, BPPARAM = MulticoreParam(5) )
+  fitStnE <- dream( vobStn, form5, pheStn, BPPARAM = MulticoreParam(5) )
+  deStnA <- topTable( fitStnA, coef="alpha", number=nrow(vobStn) )
+  deStnB <- topTable( fitStnB, coef="beta", number=nrow(vobStn) )
+  deStnG <- topTable( fitStnG, coef="gamma", number=nrow(vobStn) )
+  deStnT <- topTable( fitStnT, coef="theta", number=nrow(vobStn) )
+  deStnE <- topTable( fitStnE, coef="exponent", number=nrow(vobStn) )
+  deStnA <- data.table(gene = rownames(deStnA), deStnA)
+  deStnB <- data.table(gene = rownames(deStnB), deStnB)
+  deStnG <- data.table(gene = rownames(deStnG), deStnG)
+  deStnT <- data.table(gene = rownames(deStnT), deStnT)
+  deStnE <- data.table(gene = rownames(deStnE), deStnE)
+  myres <- list( "alpha"=deStnA, "beta"=deStnB, "gamma"=deStnG, "theta"=deStnT, "exponent"=deStnE)
+  saveRDS(myres, file="/sc/arion/projects/psychgen/lbp/results/mer/mer_protein_de_valentineMerData_25MAY2022.RDS")
+
+# check output of de
+  mypi1 <- c()
+  for (i in names(myres)){
+      curRes <- myres[[i]]
+      curPi1 <- 1 - qvalue(curRes$P.Value)$pi0 
+      add <- data.table( ephysVar=i, pi1=curPi1, nNomDEG=nrow(curRes[P.Value<0.05]), nSigDEG=nrow(curRes[adj.P.Val<0.05]))
+      mypi1 <- rbind(mypi1, add)
+  }
+  mypi1
+
+#+END_SRC
+
+
+* EPHYS | CODE BLOCK 3 | Compare DE in RNA and protein for STN measures only
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  suppressMessages(library(data.table))
+  suppressMessages(library(qvalue))
+  suppressMessages(library(corrplot))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+
+# read in data
+  rna <- readRDS("/sc/arion/projects/psychgen/lbp/results/mer/mer_rnaseq_de_valentineMerData_25MAY2022.RDS")
+  pro <- readRDS("/sc/arion/projects/psychgen/lbp/results/mer/mer_protein_de_valentineMerData_25MAY2022.RDS")
+
+# map gene protein ids
+  deProMapped <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_lbp_validation_protein_livpmDE.RDS")
+  deProMapped <- deProMapped[ gene %in% deProMapped[!is.na(gene)][,.N,gene][N==1]$gene ]
+  for (i in names(pro)){
+      cur <- pro[[i]]
+      cur[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+      cur <- merge(deProMapped[,.(refseq, gene)], cur, by.x="refseq", by.y="gene")
+      cur <- cur[!is.na(gene)]
+      pro[[i]] <- cur
+  }
+  for (i in names(pro)){
+      cur1 <- rna[[i]]
+      cur2 <- pro[[i]]
+      cur1[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+      keep <- intersect(cur1$gene, cur2$gene)
+      cur1 <- cur1[gene %in% keep]
+      cur2 <- cur2[gene %in% keep]
+      rna[[i]] <- cur1
+      pro[[i]] <- cur2
+  }
+  unique ( unlist( lapply( rna, nrow ) ) )  #[1] 5455
+  unique ( unlist( lapply( pro, nrow ) ) )  #[1] 5455
+
+# populate logFC matrix
+  mtx <- matrix(0, nrow = 5455, ncol = length(rna)*2)
+  rownames(mtx) <- rna[[1]]$gene
+  colnames(mtx) <- c(paste0(names(rna), "_rna"), paste0(names(rna), "_pro"))
+  for (i in names(pro)){
+      cur1 <- rna[[i]][,.(gene, logFC)]
+      cur2 <- pro[[i]][,.(gene, logFC)]
+      mtx[ cur1$gene , paste0(i, "_rna") ] <- cur1$logFC
+      mtx[ cur2$gene , paste0(i, "_pro") ] <- cur2$logFC
+  }
+  cmx <- cor(mtx, method="spearman")
+  corrplot(cmx, method = 'circle', order="hclus", tl.col="black", addgrid.col="black", addCoef.col="black")
+
+# check output of de
+  mypi1 <- c()
+  for (i in names(rna)){
+      cur1 <- rna[[i]]
+      cur2 <- pro[[i]]
+      curPi1 <- 1 - qvalue(cur1$P.Value)$pi0 
+      curPi2 <- 1 - qvalue(cur2$P.Value)$pi0 
+      add1 <- data.table( omic="rna", ephysVar=i, pi1=curPi1, nNomDEG=nrow(cur1[P.Value<0.05]), nSigDEG=nrow(cur1[adj.P.Val<0.05]))
+      add2 <- data.table( omic="protein", ephysVar=i, pi1=curPi2, nNomDEG=nrow(cur2[P.Value<0.05]), nSigDEG=nrow(cur2[adj.P.Val<0.05]))
+      mypi1 <- rbind(mypi1, add1, add2)
+  }
+  mypi1
+
+
+#+END_SRC
+
+
+* EPHYS | CODE BLOCK 4 | Run DE in RNAseq for all brain regions
+
+#+BEGIN_SRC R
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  suppressMessages(library(qvalue))
+  suppressMessages(library(corrplot))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+
+# expression and covariates data
+  lbp <- readRDS("/sc/arion/projects/psychgen2/lbp/data/RAW/rna/bulk/fromSema4/CompiledData/lbp_allBatches_RAPiD_Covs-featureCounts-vobjDream-Resids-LivPmDE_FINALModel_onlyBRAIN_518Samples_Excluding-Outliers-MislabeledSamples-BadSamples_19JUL2021.RDS")
+  met <- lbp$covariates
+  vob <- lbp$vobjDream
+
+# valentine ephys data
+  val <- fread("/sc/arion/projects/psychgen/lbp/data/mer/valentine_saezRotation_ALL_31MAY2022.txt")
+  val[,V1:=NULL]
+  val <- val[,c("patient_id", "region_side", "theta_CF", "theta_PW", "theta_BW", 
+                "alpha_CF", "alpha_PW", "alpha_BW", "beta_CF", "beta_PW", "beta_BW", 
+                "lgamma_CF", "lgamma_PW", "lgamma_BW", "Rsquare", "error", "exponent", 
+                "offset", "depth_mm", "duration_sec", "depth_exclude", "R2_exclude", 
+                "exponent_exclude", "exclude"), with=F]
+  val[grep("Right", region_side), hemisphere:="right"]
+  val[grep("Left", region_side), hemisphere:="left"]
+  val[grep("STN", region_side), target:="stn"]
+  ##val[grep("VIM", region_side), target:="vim"]
+  val[grep("GPi", region_side), target:="gpi"]
+  val <- val[ , .( iid=patient_id, target, hemisphere, 
+                  theta=theta_PW, alpha=alpha_PW, beta=beta_PW, gamma=lgamma_PW, 
+                  Rsquare, error, exponent, offset, depth_mm, duration_sec, 
+                  depth_exclude, R2_exclude, exponent_exclude, exclude)]
+  val[,depth_exclude:=as.logical(depth_exclude)]
+  val[,R2_exclude:=as.logical(R2_exclude)]
+  val[,exponent_exclude:=as.logical(exponent_exclude)]
+  val[,exclude:=as.logical(exclude)]
+  val <- merge(val, met[,.(iid=IID_ISMMS, hemisphere=mymet_timepoint, RNA=TRUE)], by=c("iid", "hemisphere"), all.x=T)
+  val[is.na(RNA), RNA:=FALSE]
+  form <- as.formula(paste("~",paste(colnames(val)[colnames(val) !="iid"],collapse="+")))
+  C <- canCorPairs(form, val[,colnames(val)!= "iid", with=F])
+  corrplot(C, method = 'circle', order='hclus', tl.col="black", addCoef.col="lightgrey")
+
+# filter
+  val <- val[RNA==TRUE][exclude==FALSE]
+  iter <- val[,.N,list(iid,hemisphere,target)]
+  clean <- c()
+  for (i in 1:nrow(iter)){
+      v1 <- iter[i]$iid
+      v2 <- iter[i]$hemisphere
+      v3 <- iter[i]$N
+      cur <- val[iid==v1 & hemisphere==v2]
+      if (v3 == 1){
+          add <- data.table( iid=v1, hemisphere=v2, target=cur$target, alpha=cur$alpha, 
+                            beta=cur$beta, gamma=cur$gamma, theta=cur$theta,
+                            exponent=cur$exponent)
+      } else {
+          add <- data.table( iid=v1, hemisphere=v2, target=unique(cur$target), alpha=median(cur$alpha), 
+                            beta=median(cur$beta), gamma=median(cur$gamma), theta=median(cur$theta),
+                            exponent=median(cur$exponent))
+      }
+      clean <- rbind(clean, add)
+  }
+  saveRDS(list("original"=val, "clean"=clean), file="/sc/arion/projects/psychgen/lbp/data/mer/valentine_saezRotation_ALL_31MAY2022_NOEXCLUDE.RDS")
+
+# merge ephys data with covariates
+  phe <- merge(met, clean, by.x=c("IID_ISMMS","mymet_timepoint"), by.y=c("iid","hemisphere")) 
+  phe[, DE:=target]
+
+# formulas
+  form1 <- ~ DE + DE:alpha - alpha + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form2 <- ~ DE + DE:beta - beta + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form3 <- ~ DE + DE:gamma - gamma + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form4 <- ~ DE + DE:theta - theta + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  form5 <- ~ DE + DE:exponent - exponent + 
+              (1|mymet_sex) + 
+              mymet_rin + 
+              RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + 
+              (1|IID_ISMMS) + 
+              (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + 
+              AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+
+# run de
+  phe <- as.data.frame(phe)
+  rownames(phe) <- phe$SAMPLE_ISMMS
+  vob <- vob[,rownames(phe)]
+  fitA <- dream( vob, form1, phe, BPPARAM = MulticoreParam(5) )
+  fitB <- dream( vob, form2, phe, BPPARAM = MulticoreParam(5) )
+  fitG <- dream( vob, form3, phe, BPPARAM = MulticoreParam(5) )
+  fitT <- dream( vob, form4, phe, BPPARAM = MulticoreParam(5) )
+  fitE <- dream( vob, form5, phe, BPPARAM = MulticoreParam(5) )
+  deAlpGpi <- topTable( fitA, coef="DEgpi:alpha", number=nrow(vob) )
+  deAlpStn <- topTable( fitA, coef="DEstn:alpha", number=nrow(vob) )
+  deBetGpi <- topTable( fitB, coef="DEgpi:beta", number=nrow(vob) )
+  deBetStn <- topTable( fitB, coef="DEstn:beta", number=nrow(vob) )
+  deGamGpi <- topTable( fitG, coef="DEgpi:gamma", number=nrow(vob) )
+  deGamStn <- topTable( fitG, coef="DEstn:gamma", number=nrow(vob) )
+  deTheGpi <- topTable( fitT, coef="DEgpi:theta", number=nrow(vob) )
+  deTheStn <- topTable( fitT, coef="DEstn:theta", number=nrow(vob) )
+  deExpGpi <- topTable( fitE, coef="DEgpi:exponent", number=nrow(vob) )
+  deExpStn <- topTable( fitE, coef="DEstn:exponent", number=nrow(vob) )
+  deAlpGpi <- data.table(gene = rownames(deAlpGpi), deAlpGpi)
+  deAlpStn <- data.table(gene = rownames(deAlpStn), deAlpStn)
+  deBetGpi <- data.table(gene = rownames(deBetGpi), deBetGpi)
+  deBetStn <- data.table(gene = rownames(deBetStn), deBetStn)
+  deGamGpi <- data.table(gene = rownames(deGamGpi), deGamGpi) 
+  deGamStn <- data.table(gene = rownames(deGamStn), deGamStn) 
+  deTheGpi <- data.table(gene = rownames(deTheGpi), deTheGpi) 
+  deTheStn <- data.table(gene = rownames(deTheStn), deTheStn) 
+  deExpGpi <- data.table(gene = rownames(deExpGpi), deExpGpi) 
+  deExpStn <- data.table(gene = rownames(deExpStn), deExpStn) 
+  myres <- list( "gpi"=list("alpha"=deAlpGpi, "beta"=deBetGpi, "gamma"=deGamGpi, "theta"=deTheGpi, "exponent"=deExpGpi),
+                "stn"=list("alpha"=deAlpStn, "beta"=deBetStn, "gamma"=deGamStn, "theta"=deTheStn, "exponent"=deExpStn))
+  saveRDS(myres, file="/sc/arion/projects/psychgen/lbp/results/mer/mer_rnaseq_de_valentineMerData_ALL_31MAY2022_UNFILTERED.RDS") 
+  ##myres <- readRDS("/sc/arion/projects/psychgen/lbp/results/mer/mer_rnaseq_de_valentineMerData_ALL_31MAY2022_UNFILTERED.RDS")
+  x1 <- merge( myres$gpi$alpha[,.(gene, gpi_alpha=logFC)], 
+                    myres$stn$alpha[,.(gene, stn_alpha=logFC)])
+  x2 <- merge( myres$gpi$beta[,.(gene, gpi_beta=logFC)], 
+                    myres$stn$beta[,.(gene, stn_beta=logFC)])
+  x3 <- merge( myres$gpi$gamma[,.(gene, gpi_gamma=logFC)], 
+                    myres$stn$gamma[,.(gene, stn_gamma=logFC)])
+  x4 <- merge( myres$gpi$theta[,.(gene, gpi_theta=logFC)], 
+                    myres$stn$theta[,.(gene, stn_theta=logFC)])
+  x5 <- merge( myres$gpi$exponent[,.(gene, gpi_exponent=logFC)], 
+                    myres$stn$exponent[,.(gene, stn_exponent=logFC)])
+  x6 <- merge(merge(merge(merge(x1, x2), x3), x4), x5)
+  iter <- t(combn(grep("gene", colnames(x6), invert=T, value=T), 2))
+  xx <- c()
+  for (i in 1:nrow(iter)){
+      s1 <- iter[i,1]
+      s2 <- iter[i,2]
+      cur <- cor(x6[[s1]], x6[[s2]], method="spearman")
+      add <- data.table(var1=s1, var2=s2, rho=cur)
+      xx <- rbind(xx, add)
+  }
+  xx[,c("target1","metric1"):=tstrsplit(var1, split="_")]
+  xx[,c("target2","metric2"):=tstrsplit(var2, split="_")]
+  xx <- xx[,.(target1, metric1, target2, metric2, rho)]
+  xx[,sameTarget:=FALSE]
+  xx[,sameMetric:=FALSE]
+  xx[target1==target2,sameTarget:=TRUE]
+  xx[metric1==metric2,sameMetric:=TRUE]
+  ggplot(xx, aes(rho)) + geom_density() + facet_wrap(~sameTarget+sameMetric, ncol=1)
+  ggplot(xx, aes(rho)) + geom_histogram(fill="white",col="black") + facet_wrap(~sameTarget+sameMetric, ncol=1)
+
+# check output of de
+  mypi1 <- c()
+  for (i in c("gpi", "stn")){
+      for (j in c("alpha", "beta", "gamma", "theta", "exponent")){
+          curRes <- myres[[i]][[j]]
+          curPi1 <- 1 - qvalue(curRes$P.Value)$pi0 
+          add <- data.table(target=i, metric=j, pi1=curPi1, nNomDEG=nrow(curRes[P.Value<0.05]), nSigDEG=nrow(curRes[adj.P.Val<0.05]))
+          mypi1 <- rbind(mypi1, add)
+      }
+  }
+  mypi1
+  xx <- merge(xx, mypi1[,.(target1=target, metric1=metric, pi1_1=pi1, nNomDEG1=nNomDEG, nSigDEG1=nSigDEG)])
+  xx <- merge(xx, mypi1[,.(target2=target, metric2=metric, pi1_2=pi1, nNomDEG2=nNomDEG, nSigDEG2=nSigDEG)], by=c("target2", "metric2"))
+
+# which genes?
+  tmp <- myres$exponent[order(logFC)]
+  tmp[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+  map <- fread("~/gene_ids_ensembl2symbol_fromHUGO_10JUN2020.tsv", na=c("","NA"), col.names=c("symbol", "gene"))
+
+#+END_SRC
+
+
+ 
