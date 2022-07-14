@@ -13,7 +13,7 @@ suppressMessages(library(qvalue))
 args <- commandArgs(trailingOnly=TRUE)
 idx <- as.integer(args[[1]]) #idx <- 1
 setwd("/sc/arion/projects/psychgen/lbp/data/proteomics")
-source("/sc/arion/work/charna02/scripts/lbp/pi0estFunctionUnbounded.r")
+source("pi0estFunctionUnbounded.r")
 
 ## READ - rnaseq data ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 cat("MESSAGE 2 | reading in rnaseq data\n")
