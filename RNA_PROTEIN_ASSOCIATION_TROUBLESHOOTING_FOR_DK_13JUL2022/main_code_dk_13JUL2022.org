@@ -1,0 +1,123 @@
+
+* STEP1: generate de results for each protein using various models
+
+#+BEGIN_SRC shell
+
+# setup 
+  ml R/4.0.3
+  RSCRIPT=RUN_bulk_protein_rna_pairwise_dream_de_VOBJECT_LOO.r
+  SDR=/sc/arion/projects/psychgen/lbp/scratch/TMP1
+  ODR=/sc/arion/projects/psychgen/lbp/scratch/TMP2
+
+# run
+  cd ${SDR}
+  for i in {1..6415} #change to reflect number proteins in matrix
+  do mybsub psychgen index${i} 5000 0:15 premium 1 "Rscript ${RSCRIPT} ${i}"
+  done
+
+# check
+  cd ${SDR}
+  ls index*.stdout | sed s/'.stdout'/''/g | sort | uniq > sent
+  fgrep -m1 Successfully index*.stdout | awk -F":" '{print $1}' | sed s/'.stdout'/''/g | sort | uniq > success
+  comm -23 sent success > fail
+  echo index{1..6415} | tr ' ' '\n' | sort | uniq > all
+  comm -23 all sent > notsent  
+  wc -l sent success fail notsent all
+  #  6415 sent
+  #  6415 success
+  #     0 fail
+  #     0 notsent
+  #  6415 all
+
+# clean up
+  cd ${ODR}
+  rm -rf ${SDR}
+
+#+END_SRC
+
+
+* STEP2: compile output of STEP1 
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(patchwork)
+  library(foreach)
+  library(parallel)
+  library(doMC)
+  library(qvalue)
+  options(cores = detectCores())
+  registerDoMC(16)
+  setwd("/sc/arion/projects/psychgen/lbp/scratch/TMP2")
+  source("/sc/arion/work/charna02/scripts/lbp/pi0estFunctionUnbounded.r")
+
+# ASSEMBLE DATA | id map 
+  map <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_lbp_validation_protein_livpmDE.RDS")
+  map <- map[,.(refseq, gene, LIVPM, ProteinCompleteness)]
+  map <- map[order(ProteinCompleteness)]
+  map[,ProteinCompletenessDec := floor(1 + 10 * (.I-1) / .N)]
+
+# ASSEMBLE DATA | summary stats (eg, pi1)
+  F <- grep("COMBINED", Sys.glob("*.RDS"), invert=T, value=T) 
+  DX <- foreach(i = 1:length(F), .combine = rbind )%dopar%{
+      if (i %% 100 == 0 ) cat("\r", i," of ", length(F),"\t\t")
+      add <- readRDS(F[i])
+      add
+  }
+
+# SAVE
+  saveRDS(DX, file="COMBINED_N6415_SUMMARIES_VOBJECT_LOO.RDS")
+
+#+END_SRC
+
+
+* STEP3: visualize results
+
+#+BEGIN_SRC R
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  library(ggplot2) 
+  library(ggthemes)
+  library(patchwork)
+  setwd("/sc/arion/projects/psychgen/lbp/scratch/TMP2")
+  source("/sc/arion/work/charna02/scripts/lbp/pi0estFunctionUnbounded.r")
+
+# read in data
+  DX <- readRDS("./COMBINED_N6415_SUMMARIES_VOBJECT_LOO.RDS")
+  DL <- rbind( DX[,.(protein, model, variable="PI1", dataset="LIV", value=LIV_PI1)], 
+              DX[,.(protein, model, variable="PI1", dataset="PM", value=PM_PI1)], 
+              DX[,.(protein, model, variable="PI1UB", dataset="LIV", value=LIV_PI1UB)], 
+              DX[,.(protein, model, variable="PI1UB", dataset="PM", value=PM_PI1UB)], 
+              DX[,.(protein, model, variable="LIVPM_RHO", dataset="LIVPM", value=LIVPM_RHO)] ) 
+  DL[,modeltype:=tstrsplit(model, split=".", fixed=T, keep=1L)]
+  DL[,model:=tstrsplit(model, split=".", fixed=T, keep=2L)]
+  DL[is.na(model),  model:=modeltype]
+
+# plots
+  pX <- ggplot(DL[variable=="PI1UB" & !modeltype %in% c("LOI", "LOO")], aes(value, fill=dataset)) +  
+       geom_histogram(color="black") + 
+       geom_vline(xintercept=0, col="red") +
+       facet_grid(dataset ~ model, scales="free_y") + 
+       theme_base() + 
+       ggtitle("PI1UB")
+  p0 <- ggplot(DL[variable=="PI1UB" & modeltype=="LOO"], aes(value, fill=dataset)) +  
+       geom_histogram(color="black") + 
+       geom_vline(xintercept=0, col="red") +
+       facet_grid(dataset ~ model, scales="free_y") + 
+       theme_base() + 
+       ggtitle("PI1UB, LOO")
+  p1 <- ggplot(DL[variable=="PI1UB" & modeltype=="LOI"], aes(value, fill=dataset)) +  
+       geom_histogram(color="black") + 
+       geom_vline(xintercept=0, col="red") +
+       facet_grid(dataset ~ model, scales="free_y") + 
+       theme_base() + 
+       ggtitle("PI1UB, LOI")
+  
+#+END_SRC
+
