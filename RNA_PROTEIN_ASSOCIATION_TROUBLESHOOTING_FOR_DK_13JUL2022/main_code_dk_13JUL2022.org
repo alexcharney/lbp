@@ -53,7 +53,7 @@
   options(cores = detectCores())
   registerDoMC(16)
   setwd("/sc/arion/projects/psychgen/lbp/scratch/TMP2")
-  source("/sc/arion/work/charna02/scripts/lbp/pi0estFunctionUnbounded.r")
+  source("pi0estFunctionUnbounded.r")
 
 # ASSEMBLE DATA | id map 
   map <- readRDS("/sc/arion/projects/psychgen/lbp/results/lel2021_lbp_validation_protein_livpmDE.RDS")
@@ -86,7 +86,7 @@
   library(ggthemes)
   library(patchwork)
   setwd("/sc/arion/projects/psychgen/lbp/scratch/TMP2")
-  source("/sc/arion/work/charna02/scripts/lbp/pi0estFunctionUnbounded.r")
+  source("pi0estFunctionUnbounded.r")
 
 # read in data
   DX <- readRDS("./COMBINED_N6415_SUMMARIES_VOBJECT_LOO.RDS")
