@@ -1,0 +1,1906 @@
+
+* WGS DATA PREPARATION FOR QTL ANALYSES
+
+## THIS IS CODE WHERE WGS QC2CALLSET IS FURTHER PREPARED IN A MANNER SPECIFIC FOR QTL ANALYSES
+
+#+NAME: DONE|PREP|list_iid_in_lel2021
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: this is just to make a list of the indivuals in the RNAseq data in Lora's LIV-PM paper
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp/files")
+
+# data
+  lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  
+# write
+  fout <- "lel2021_n412_individuals_postqc.tsv"
+  dout <- unique(lbp$covariates[,.(FID=IID_ISMMS, IID=IID_ISMMS, mymet_postmortem)])
+  dout[,FID:=gsub("_", "-", FID)] #to match WGS IDs ... not clear why for these 15-ish sometimes its hyphens and sometimes underscores but kill me
+  dout[,IID:=gsub("_", "-", IID)]
+  fwrite(dout, sep='\t', row=F, col=T, quo=F, file=fout)
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/files/lel2021_n412_individuals_postqc.tsv
+#+END_SRC
+
+#+NAME: DONE|RUN|make_qtl_wgs_dataset_from_qc2callset
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: format genetic data for qtltools software
+##
+##bcftools 1.9
+##PLINK v1.90b6.21
+##tabix 0.2.5
+
+# setup
+  ml bcftools tabix plink 
+  DIR=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement
+  SCR=/sc/arion/projects/psychgen/lbp/scratch/QTLWD
+  RID=/sc/arion/projects/psychgen/lbp/files/lel2021_n412_individuals_postqc.tsv
+  QC2=${DIR}/lbp_wgs_qc2callset
+  Q2S=${DIR}/lbp_wgs_qc2callset.strict
+  ODR=/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL
+  OD2=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA
+
+# keep samples in the bulk rnaseq liv-pm paper postqc
+  cd ${SCR}
+  I1=${QC2}
+  I2=${Q2S}
+  O1=${SCR}/qc2_a
+  O2=${SCR}/qc2s_a
+  plink --bfile ${I1} --keep ${RID} --make-bed --out ${O1}
+  plink --bfile ${I2} --keep ${RID} --make-bed --out ${O2}
+
+# SIDETRACK: some counts to establish who is in this data relative to expectation
+  #
+  #----------------------------
+  # What is our expectation?
+  #----------------------------
+  #
+  # - From /sc/arion/projects/psychgen/lbp/data/RAW/dna/wgs/00README, 
+  #   we can see that 500 samples were sent to VUMC for WGS. There was 1
+  #   that ultimately did not enough DNA to sequence (5721-EC-295 and 
+  #   5721-EC-504, for original submission and resubmission, respectively) 
+  #   This is individual PT-0128. The "QC0CALLSET" contains the remaining 499. 
+  #
+  # - From code block in lbp.org called "check what we are sending to vanderbilt", 
+  #   we can see 418 IID underwent brain RNAseq at Sema4. We sent DNA to VUMC for WGS
+  #   for 416 of these 418 IID. The two IID we did not send DNA for were PT-0063 and PT-0118.
+  #
+  # - In going from the QC0CALLSET to the QC2CALLSET, 54 IID were removed 
+  #   (81 IID for QC2STRICTCALLSET). Of the remaining 445 IID, 361 are amongst
+  #   the 418 sent to Sema4 for brain RNAseq. We can see that here:
+  #
+  cd ${SCR}
+  QC0=${DIR}/lbp_wgs_qc0callset.vcf.gz
+  QC1=${DIR}/lbp_wgs_qc1callset.fam
+  QC2=${DIR}/lbp_wgs_qc2callset.fam
+  Q2S=${DIR}/lbp_wgs_qc2callset.strict.fam
+  QCR=${SCR}/qc2_a.fam
+  bcftools query --list-samples ${QC0} | wc -l #499
+  wc -l ${QC1}                                 #449
+  wc -l ${QC2}                                 #445
+  wc -l ${Q2S}                                 #418
+  wc -l ${QCR}                                 #361
+  #
+  #
+  # Does 361 seem low? Is this what we expected? There are (a) two 
+  # brain RNAseq samples we did not send for WGS and (b) one IID sent for WGS
+  # that had brain RNAseq but failed WGS. So, amongst the 412 IID in
+  # the brain RNAseq post-qc, we expect 409 to also have WGS in QC0CALLSET. 
+  # Indeed, this is the case:
+  #
+  cd ${SCR}
+  awk 'NR>1 {print $1}' ${RID} | sort | uniq > tmp1 #rnaseq 
+  bcftools query --list-samples ${QC0} | sort | uniq > tmp2 #qc0
+  comm -12 tmp1 tmp2 | wc -l #409
+  #
+  # We removed 54 IID from QC0CALLSET to get to QC2CALLSET, and 
+  # there are 361 IID shared between QC2CALLSET and the 412 in RNAseq. 
+  # This implies that 48 (409-361) of these 54 removed IIDs are in the 412
+  # with RNAseq. Indeed, we can see that here:
+  #
+  cd ${SCR}
+  awk 'NR>1 {print $1}' ${RID} | sort | uniq > tmp1 #rnaseq 
+  bcftools query --list-samples ${QC0} | sed s/'0214\/15'/'0214'/g | sort | uniq > tmp2 #qc0
+  awk '{print $1}' ${QC2} | sort | uniq > tmp3 #qc2
+  comm -23 tmp2 tmp3 | wc -l #54
+  comm -23 tmp2 tmp3 > tmp4 #removed between qc0 and qc2
+  comm -12 tmp1 tmp4 | wc -l #48
+  comm -12 tmp1 tmp4 > tmp5
+  #
+  # Of the 48 people in rnaseq that we lose, are they LIV or PM? Mostly PM:
+  #
+  grep -wf tmp5 ${RID} | awk '{print $3}' | sort | uniq -c
+  #    6 0 ... LIV
+  #   42 1 ... PM
+  #
+  # Of the people in rnaseq we keep, what is LIV/PM count?
+  #
+  comm -12 tmp1 tmp3 > tmp6 # rnaseq and qc2
+  grep -wf tmp6 ${RID} | awk '{print $3}' | sort | uniq -c
+  #  160 0
+  #  201 1
+
+# basic variant/sample qc
+  I1=${SCR}/qc2_a
+  I2=${SCR}/qc2s_a
+  O1=${SCR}/qc2_b
+  O2=${SCR}/qc2s_b
+  plink --bfile ${I1} --make-bed --out ${O1} --geno 0.02 --mac 10 --hwe 0.0000000000000005
+  plink --bfile ${I2} --make-bed --out ${O2} --geno 0.02 --mac 10 --hwe 0.0000000000000005
+  cat ${I1}.bim | wc -l #25058902
+  cat ${I2}.bim | wc -l #25058902
+  cat ${O1}.bim | wc -l #5136250
+  cat ${O2}.bim | wc -l #4961900
+
+# save
+  mv ${SCR}/qc2_b.bed ${ODR}/lbp_wgs_qc2callset.forQTL20OCT2022.bed
+  mv ${SCR}/qc2_b.bim ${ODR}/lbp_wgs_qc2callset.forQTL20OCT2022.bim
+  mv ${SCR}/qc2_b.fam ${ODR}/lbp_wgs_qc2callset.forQTL20OCT2022.fam
+  mv ${SCR}/qc2s_b.bed ${ODR}/lbp_wgs_qc2callset.strict.forQTL20OCT2022.bed
+  mv ${SCR}/qc2s_b.bim ${ODR}/lbp_wgs_qc2callset.strict.forQTL20OCT2022.bim
+  mv ${SCR}/qc2s_b.fam ${ODR}/lbp_wgs_qc2callset.strict.forQTL20OCT2022.fam
+
+# make vcf
+  cd ${OD2}
+  I1=${ODR}/lbp_wgs_qc2callset.forQTL20OCT2022
+  I2=${ODR}/lbp_wgs_qc2callset.strict.forQTL20OCT2022
+  O1=${OD2}/LIVPM_dna
+  O2=${OD2}/LIVPM_dna_strict
+  plink --bfile ${I1} --recode vcf-fid --out ${O1}
+  plink --bfile ${I2} --recode vcf-fid --out ${O2}
+  cat ${O1}.vcf | grep ^\# -v | wc -l #5136250
+  cat ${O2}.vcf | grep ^\# -v | wc -l #4961900
+  bgzip ${O1}.vcf && tabix -p vcf ${O1}.vcf.gz &
+  bgzip ${O2}.vcf && tabix -p vcf ${O2}.vcf.gz &
+  zcat ${O1}.vcf.gz | grep ^\# -v | wc -l #
+  zcat ${O2}.vcf.gz | grep ^\# -v | wc -l #
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset{,.strict}.forQTL20OCT2022.{bed,bim,fam}
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_dna{,_strict}.vcf.gz
+#+END_SRC
+
+#+NAME: DONE|FORMAT|pca_for_qtltools
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: format genetic pca components for qtltools software
+
+# setup 
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp")
+
+# fam
+  fm2 <- fread("./data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.fam", header=F)
+  f2s <- fread("./data/dna/wgs_forQTL/lbp_wgs_qc2callset.strict.forQTL20OCT2022.fam", header=F)
+
+# format mds
+  md2 <- fread("./data/dna/wgs_GenotypeRefinement/lbp_wgs_qc2callset.vcf.gz.pca.eigenvec")
+  m2s <- fread("./data/dna/wgs_GenotypeRefinement/lbp_wgs_qc2callset.strict.vcf.gz.pca.eigenvec")
+  md2 <- md2[,2:12]
+  m2s <- m2s[,2:12]
+  colnames(md2) <- c("id", paste0("PC",1:10))
+  colnames(m2s) <- c("id", paste0("PC",1:10))
+  md2 <- md2[id %in% fm2$V1]
+  m2s <- m2s[id %in% f2s$V1]
+  md2 <- as.data.frame(md2)
+  m2s <- as.data.frame(m2s)
+  rownames(md2) <- md2$id
+  rownames(m2s) <- m2s$id
+  md2$id <- NULL
+  m2s$id <- NULL
+  md2 <- t(md2)
+  m2s <- t(m2s)
+  md2 <- data.frame("id"=rownames(md2),md2)
+  m2s <- data.frame("id"=rownames(m2s),m2s)
+  colnames(md2) <- gsub(".", "-", fixed=T, colnames(md2))
+  colnames(m2s) <- gsub(".", "-", fixed=T, colnames(m2s))
+
+# save
+  odr <- "/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/"
+  of1 <- paste0(odr, "LIVPM_mds.txt")
+  of2 <- paste0(odr, "LIVPM_mds_strict.txt")
+  write.table(md2, row=F, quo=F, file=of1)
+  write.table(m2s, row=F, quo=F, file=of2)
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds{,_strict}.txt
+#+END_SRC
+
+#+NAME: WIP|RUN|gwas
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: runs gwas of livpm status to remove snps with frequencies that differ between liv and pm from qtl analyses
+
+# setup
+  DAT=/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022
+  PCA=/sc/arion/projects/psychgen/lbp/data/dna/wgs_GenotypeRefinement/lbp_wgs_qc2callset.vcf.gz.pca.eigenvec
+  COV=${DAT}.cov
+  PHE=${DAT}.phe
+  OUT=${DAT}.gwas
+  
+# make phe file
+  grep "PT-" ${DAT}.fam | awk '{print $1, $2, 1}' > ${PHE}
+  grep "PT-" ${DAT}.fam -v | awk '{print $1, $2, 2}' >> ${PHE}
+
+# make covar file
+  awk '{print $1}' ${DAT}.fam | grep -wf - ${PCA} > ${COV}
+
+# run gwas
+  plink --bfile ${DAT} --logistic 'hide-covar' --covar ${COV} --pheno ${PHE} --out ${OUT} --allow-no-sex
+
+# frequencies
+  plink --bfile ${DAT} --freq case-control --pheno ${PHE} --out ${DAT} --allow-no-sex
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.gwas.assoc.logistic
+##/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.frq.cc
+#+END_SRC
+
+
+* RNASEQ DATA PREPARATION FOR QTL ANALYSES
+
+#+NAME: DONE|PEER|prepare_rna_and_protein_data_for_PEER
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: prepare_rna_and_protein_data_for_PEER
+##
+##R version 4.0.3
+
+# SETUP | load libraries
+  rm(list=ls())
+  suppressMessages(library(data.table))
+  suppressMessages(library(limma))
+  setwd("/sc/arion/projects/psychgen/lbp")
+
+# WGS SAMPLE LIST
+  wg2 <- fread("./data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.fam", header=F)$V1
+  w2s <- fread("./data/dna/wgs_forQTL/lbp_wgs_qc2callset.strict.forQTL20OCT2022.fam", header=F)$V1
+
+# READ IN RNA DATA | expression data
+  rna <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  rnaMet <- rna$covariates
+  rnaVob <- rna$vobjDream
+  rownames(rnaVob) <- tstrsplit(rownames(rnaVob), split=".", fixed=T, keep=1L)[[1]]
+  rnaMet[mymet_postmortem==1,IID_ISMMS:=gsub("_", "-", IID_ISMMS)]
+
+# READ IN PROTEIN DATA | expression data
+  pro <- readRDS("./results/LBP_LIVPM_PROTEIN_DE_INPUT_DATA_AND_RESULTS_USING_LELQC_19OCT2022.RDS")
+  proMet <- as.data.table(pro$meta)
+  proVob <- pro$expression
+  proMet[mymet_postmortem==1, IID_ISMMS:=gsub("_", "-", IID_ISMMS)]
+  rownames(proVob) <- unlist(tstrsplit(rownames(proVob), split=".", fixed=T, keep=1L))
+  dim(proVob) #[1] 6415  488
+  proVob <- proVob[pro$livpmDE[!is.na(gene)]$refseq,] #map protein IDs to gene IDs (needed for tss mapping)
+  dim(proVob) #[1] 5758  488    
+  rownames(proVob) <- pro$livpmDE[!is.na(gene)]$gene
+
+# EXPLORE RNA PROTEIN OVERLAP IN SAMPLES
+  rnaAll <- fread("./files/sema4_bulk_rna_sample_sheet/Bulk_RNA_Isolation_Mastertable_BRAINANDBLOOD_forSEMA4_awcFormatted.tsv")
+  rnaSam <- rnaMet[,.(iid=IID_ISMMS, sid=SAMPLE_ISMMS)]
+  proSam <- proMet[,.(iid=IID_ISMMS, sid=SAMPLE_ISMMS)]
+  rnaSam[,inProtein:=FALSE]
+  rnaSam[sid %in% proMet$SAMPLE_ISMMS, inProtein:=TRUE]
+  proSam[,inRna:=FALSE]
+  proSam[sid %in% rnaMet$SAMPLE_ISMMS, inRna:=TRUE]
+  proSam[,inRnaAll:=FALSE]
+  proSam[sid %in% rnaAll$LBPSEMA4_ID, inRnaAll:=TRUE]
+  rnaSamLv <- rnaSam[ sid %in% rnaMet[mymet_postmortem==0]$SAMPLE_ISMMS ]
+  rnaSamPm <- rnaSam[ sid %in% rnaMet[mymet_postmortem==1]$SAMPLE_ISMMS ]
+  proSamLv <- proSam[ sid %in% proMet[mymet_postmortem==0]$SAMPLE_ISMMS ]
+  proSamPm <- proSam[ sid %in% proMet[mymet_postmortem==1]$SAMPLE_ISMMS ]
+  uniqueN(rnaSam$iid) #[1] 412
+  uniqueN(proSam$iid) #[1] 401
+  uniqueN(rnaSam$sid) #[1] 518
+  uniqueN(proSam$sid) #[1] 488
+  uniqueN(rnaSamLv$iid) #[1] 169
+  uniqueN(proSamLv$iid) #[1] 161
+  uniqueN(rnaSamLv$sid) #[1] 275
+  uniqueN(proSamLv$sid) #[1] 248
+  uniqueN(rnaSamPm$iid) #[1] 243
+  uniqueN(proSamPm$iid) #[1] 240
+  uniqueN(rnaSamPm$sid) #[1] 243
+  uniqueN(proSamPm$sid) #[1] 240
+
+# FILTER LIV RNA DATA | choose one sid per liv iid in rnaseq data
+  set.seed(666)
+  lvOne <- rnaSamLv[,.N,iid][N==1]$iid
+  lvTwo <- rnaSamLv[,.N,iid][N==2]$iid
+  lvOne <- rnaSamLv[iid %in% lvOne]
+  lvTwo <- rnaSamLv[iid %in% lvTwo]
+  for (i in unique(lvTwo$iid)){
+      cur <- lvTwo[iid==i]
+      check <- nrow(cur[inProtein==TRUE])
+      if (check==1){
+          add <- cur[inProtein==TRUE]
+      } else {
+          add <- cur[sid==sample(cur$sid, 1)]
+      }
+      lvOne <- rbind(lvOne, add)
+  }
+  rnaSamLv1 <- copy(lvOne)
+  uniqueN(rnaSamLv1$iid) #[1] 169
+  uniqueN(rnaSamLv1$sid) #[1] 169
+
+# FILTER LIV PROTEIN DATA | choose one sid per liv iid in protein data
+  set.seed(666)
+  lvOne <- proSamLv[,.N,iid][N==1]$iid
+  lvTwo <- proSamLv[,.N,iid][N==2]$iid
+  lvOne <- proSamLv[iid %in% lvOne]
+  lvTwo <- proSamLv[iid %in% lvTwo]
+  for (i in unique(lvTwo$iid)){
+      cur <- lvTwo[iid==i]
+      cur[,inRna1:=FALSE]
+      cur[sid %in% rnaSamLv1$sid, inRna1:=TRUE]
+      check <- nrow(cur[inRna1==TRUE])
+      if (check==1){
+          add <- cur[inRna1==TRUE, .(iid, sid, inRna, inRnaAll)]
+      } else {
+          add <- cur[sid==sample(cur$sid, 1), .(iid, sid, inRna, inRnaAll)]
+      }
+      lvOne <- rbind(lvOne, add)
+  }
+  proSamLv1 <- copy(lvOne)
+  uniqueN(proSamLv1$iid) #[1] 161
+  uniqueN(proSamLv1$sid) #[1] 161
+  nrow(proSamLv1[inRna==TRUE]) #[1] 159
+  nrow(proSamLv1[sid %in% rnaSamLv1$sid]) #[1] 159 ... good, means same sample being used in rna and protein when possible
+
+# FORMAT DATA | subset metadata for samples we are retaining
+  rnaSamKeep <- rbind(rnaSamPm, rnaSamLv1)
+  proSamKeep <- rbind(proSamPm, proSamLv1)
+  rnaMetKeep <- rnaMet[SAMPLE_ISMMS %in% rnaSamKeep$sid]
+  proMetKeep <- proMet[SAMPLE_ISMMS %in% proSamKeep$sid]
+  rnaMyCovar <- c("mymet_postmortem", "mymet_sex", "neuronal", "RNASeqMetrics_MEDIAN_3PRIME_BIAS", "RNASeqMetrics_PCT_MRNA_BASES",
+             "mymet_depletionbatch", "InsertSizeMetrics_MEDIAN_INSERT_SIZE", 
+             "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR")
+  proMyCovar <- c("mymet_postmortem")
+  rnaMyForma <- as.formula(paste("~",paste(rnaMyCovar,collapse="+")))
+  proMyForma <- as.formula(paste("~",paste(proMyCovar,collapse="+")))
+  rnaCovKeep <- as.data.frame(rnaMetKeep[, c("IID_ISMMS",rnaMyCovar), with=F])
+  proCovKeep <- as.data.frame(proMetKeep[, c("IID_ISMMS",proMyCovar), with=F])
+  rownames(rnaCovKeep) <- rnaCovKeep$IID_ISMMS
+  rownames(proCovKeep) <- proCovKeep$IID_ISMMS
+  rnaCovKeep$IID_ISMMS <- NULL
+  proCovKeep$IID_ISMMS <- NULL
+  rnaCovKeep$mymet_depletionbatch <- as.character(rnaCovKeep$mymet_depletionbatch)
+
+# FORMAT DATA | rename columns in rnaseq/protein from SID to IID (to match wgs)
+  rnaVobKeep <- rnaVob[,rnaSamKeep$sid]
+  proVobKeep <- proVob[,proSamKeep$sid]
+  if (identical(colnames(rnaVobKeep), rnaSamKeep$sid)) colnames(rnaVobKeep) <- rnaSamKeep$iid
+  if (identical(colnames(proVobKeep), proSamKeep$sid)) colnames(proVobKeep) <- proSamKeep$iid
+
+# SUBSET AND FORMAT DATA | only keep samples with WGS data
+  uniqueN(rnaSamKeep[iid %in% wg2]$iid) #[1] 361 (as expected, see earlier code blocks)
+  uniqueN(proSamKeep[iid %in% wg2]$iid) #[1] 345
+  wg2KeepRna <- intersect(rnaSamKeep$iid, wg2)
+  w2sKeepRna <- intersect(rnaSamKeep$iid, w2s)
+  wg2KeepPro <- intersect(proSamKeep$iid, wg2)
+  w2sKeepPro <- intersect(proSamKeep$iid, w2s)
+  rnaCovKeep2 <- rnaCovKeep[wg2KeepRna,,drop=F]
+  rnaVobKeep2 <- rnaVobKeep[,wg2KeepRna,drop=F]
+  rnaMtxKeep2 <- t(rnaVobKeep2$E)
+  rnaCovKeep2S <- rnaCovKeep[w2sKeepRna,,drop=F]
+  rnaVobKeep2S <- rnaVobKeep[,w2sKeepRna,drop=F]
+  rnaMtxKeep2S <- t(rnaVobKeep2S$E)
+  proCovKeep2 <- proCovKeep[wg2KeepPro,,drop=F]
+  proVobKeep2 <- proVobKeep[,wg2KeepPro,drop=F]
+  proMtxKeep2 <- t(proVobKeep2)
+  proCovKeep2S <- proCovKeep[w2sKeepPro,,drop=F]
+  proVobKeep2S <- proVobKeep[,w2sKeepPro,drop=F]
+  proMtxKeep2S <- t(proVobKeep2S)
+
+# MAKE | design matrices
+  rnaDesKeep2 <- model.matrix(rnaMyForma, rnaCovKeep2)
+  proDesKeep2 <- model.matrix(proMyForma, proCovKeep2)
+  rnaDesKeep2S <- model.matrix(rnaMyForma, rnaCovKeep2S)
+  proDesKeep2S <- model.matrix(proMyForma, proCovKeep2S)
+  dim(rnaDesKeep2) #[1] 361  32
+  dim(proDesKeep2) #[1] 345   2
+  dim(rnaVobKeep2) #[1] 21635   361
+  dim(proVobKeep2) #[1] 5758  345
+  rnaVobKeep2 <- rnaVobKeep2[,rownames(rnaDesKeep2)]
+  proVobKeep2 <- proVobKeep2[,rownames(proDesKeep2)]
+  rnaVobKeep2S <- rnaVobKeep2[,rownames(rnaDesKeep2S)]
+  proVobKeep2S <- proVobKeep2[,rownames(proDesKeep2S)]
+  identical(colnames(rnaVobKeep2), rownames(rnaDesKeep2)) #[1] TRUE
+  identical(colnames(proVobKeep2), rownames(proDesKeep2)) #[1] TRUE
+
+# RNA EDITING
+  red <- fread("./data/runEQTL/20OCT2022/RNAEDITING/Matrix_edQTL.txt")
+  redbed <- red[,1:6]
+  rdx <- fread("./data/runEQTL/20OCT2022/RNAEDITING/Matrix_edQTL_IDMAP.txt")
+  rdx[,IID_ISMMS:=gsub("_", "-", IID_ISMMS)] #fix miami
+  length(rdx$ID) == nrow(rnaMet[SAMPLE_ISMMS %in% rdx$ID]) #[1] TRUE ... verifies rnaediting data is limited to post-qc lora data
+  #
+  # covariates and formula (same as rna)
+  #
+  redMyCovar <- c("mymet_postmortem", "mymet_sex", "neuronal", "RNASeqMetrics_MEDIAN_3PRIME_BIAS", "RNASeqMetrics_PCT_MRNA_BASES",
+             "mymet_depletionbatch", "InsertSizeMetrics_MEDIAN_INSERT_SIZE", 
+             "AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR")
+  redMyForma <- as.formula(paste("~",paste(redMyCovar,collapse="+")))
+  #
+  # vobject
+  #
+  redVobKeep <- as.data.frame(red[,7:ncol(red)])
+  rownames(redVobKeep) <- red$pid 
+  colnames(redVobKeep) <- gsub("_", "-", colnames(redVobKeep)) #fix miami
+  #
+  # metadata
+  #
+  redMetKeep <- rnaMet[SAMPLE_ISMMS %in% rdx$ID]
+  redCovKeep <- as.data.frame(redMetKeep[, c("IID_ISMMS",redMyCovar), with=F])
+  rownames(redCovKeep) <- redCovKeep$IID_ISMMS
+  redCovKeep$IID_ISMMS <- NULL
+  redCovKeep$mymet_depletionbatch <- as.character(redCovKeep$mymet_depletionbatch)
+  #
+  # subset for samples with wgs
+  #
+  wg2KeepRed <- intersect(colnames(redVobKeep), wg2)
+  w2sKeepRed <- intersect(colnames(redVobKeep), w2s)
+  redVobKeep2 <- redVobKeep[,wg2KeepRed]
+  redVobKeep2S <- redVobKeep[,w2sKeepRed]
+  redCovKeep2 <- redCovKeep[wg2KeepRed,]
+  redCovKeep2S <- redCovKeep[w2sKeepRed,]
+  redMtxKeep2 <- t(redVobKeep2)
+  redMtxKeep2S <- t(redVobKeep2S)
+  dim(redMtxKeep2) #[1]   350 54825
+  #
+  # design matrix
+  #
+  redDesKeep2 <- model.matrix(redMyForma, redCovKeep2)
+  redDesKeep2S <- model.matrix(redMyForma, redCovKeep2S)
+
+# SAVE
+  rnaSamKeep2 <- rnaSamKeep[iid %in% colnames(rnaVobKeep2)]
+  proSamKeep2 <- proSamKeep[iid %in% colnames(proVobKeep2)]
+  redSamKeep2 <- rdx[IID_ISMMS %in% colnames(redVobKeep2)][,.(iid=IID_ISMMS, sid=ID)]
+  out <- list( "rna" = list( "peerMatrices"=list("QC2CALLSET"=rnaMtxKeep2, "QC2STRICTCALLSET"=rnaMtxKeep2S),
+                            "peerDesigns"=list("QC2CALLSET"=rnaDesKeep2, "QC2STRICTCALLSET"=rnaDesKeep2S),
+                            "peerSampleMetadata"=list("QC2CALLSET"=rnaCovKeep2, "QC2STRICTCALLSET"=rnaCovKeep2S),
+                            "peerVobjects"=list("QC2CALLSET"=rnaVobKeep2, "QC2STRICTCALLSET"=rnaVobKeep2S),
+                            "peermyFrm"=rnaMyForma, "peerSampleList"=rnaSamKeep2),
+              "protein" = list( "peerMatrices"=list("QC2CALLSET"=proMtxKeep2, "QC2STRICTCALLSET"=proMtxKeep2S),
+                            "peerDesigns"=list("QC2CALLSET"=proDesKeep2, "QC2STRICTCALLSET"=proDesKeep2S),
+                            "peerSampleMetadata"=list("QC2CALLSET"=proCovKeep2, "QC2STRICTCALLSET"=proCovKeep2S),
+                            "peerVobjects"=list("QC2CALLSET"=proVobKeep2, "QC2STRICTCALLSET"=proVobKeep2S),
+                            "peermyFrm"=proMyForma, "peerSampleList"=proSamKeep2),
+              "rnaediting" = list( "peerMatrices"=list("QC2CALLSET"=redMtxKeep2, "QC2STRICTCALLSET"=redMtxKeep2S),
+                            "peerDesigns"=list("QC2CALLSET"=redDesKeep2, "QC2STRICTCALLSET"=redDesKeep2S),
+                            "peerSampleMetadata"=list("QC2CALLSET"=redCovKeep2, "QC2STRICTCALLSET"=redCovKeep2S),
+                            "peerVobjects"=list("QC2CALLSET"=redVobKeep2, "QC2STRICTCALLSET"=redVobKeep2S),
+                            "peermyFrm"=redMyForma, "peerRedBed"=redbed, "peerSampleList"=redSamKeep2) )
+  saveRDS(out, file="/sc/arion/projects/psychgen/lbp/data/PEER/LIVPM_20OCT2022_RNA_PRO_RNAEDITING.RDS")
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/data/PEER/LIVPM_20OCT2022_RNA_PRO_RNAEDITING.RDS
+#+END_SRC
+
+#+NAME: DONE|PEER|run_PEER_on_rnaseq_and_protein_data
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: run_PEER_on_rnaseq_and_protein_data
+##
+## The RSCRIPT uses following as input
+##    /sc/arion/projects/psychgen/lbp/data/PEER/LIVPM_20OCT2022_RNA_PRO_RNAEDITING.RDS
+##
+## and will put output at following
+##    /sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/{RNA,PROTEIN,RNAEDITING}
+##
+
+# setup
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_prep_rnaseq_and_protein_data_for_peer_20OCT2022.r
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/20OCT2022
+
+# run
+  cd ${SDR}
+  for i in {1..30}
+  do 
+    for j in rna protein rnaediting
+    do 
+      mybsub psychgen nsv${i}_${j} 5000 5:00 premium 1 "Rscript ${RSCRIPT} ${i} ${j}"
+    done
+  done
+
+# check 
+  cd ${SDR}
+  grep Success nsv*stdout | wc -l #90
+
+# list output
+  ls -1 /sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/{RNA,PROTEIN,RNAEDITING}/*nsv*bed | wc -l #180
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/{RNA,PROTEIN,RNAEDITING}/{QC2CALLSET,QC2STRICTCALLSET}*nsv*bed
+#+END_SRC
+
+#+NAME: DONE|FORMAT|sort_and_index_all_matrices_we_plan_to_use
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: sort_and_index_all_matrices_we_plan_to_use
+
+# setup
+  module load tabix bedtools
+  IDR=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022
+  SCR=/sc/arion/projects/psychgen/lbp/scratch/runEQTL/20OCT2022
+  ##SDR=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/20OCT2022
+
+# sort/index/compress bed files
+  cd ${SCR}
+  for h in RNA PROTEIN RNAEDITING
+  do 
+    for i in `ls -1 ${IDR}/${h}/*bed`
+    do 
+      echo ${h} ${i}
+      head -1 ${i} > tmp.bed
+      bedtools sort -i ${i} >> tmp.bed
+      cat tmp.bed | bgzip > tmp.bed.gz
+      mv tmp.bed.gz ${i}.gz
+      tabix -p bed ${i}.gz
+    done
+  done
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/{RNA,PROTEIN,RNAEDITING}/{QC2CALLSET,QC2STRICTCALLSET}*nsv*bed.gz
+#+END_SRC
+
+
+* PRIMARY QTL ANALYSES (qtltools)
+
+#+NAME: DONE|PRIMARY_QTL_STUFF|run_qtltools
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: run_qtltools
+
+# setup
+  module load qtltools/1.1 tabix
+  IDR=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022
+  SCR=/sc/arion/projects/psychgen/lbp/scratch/runEQTL/20OCT2022
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/20OCT2022
+  RDR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022
+
+# create directory structure for organizing/tracking selfsched
+  cd ${SDR}
+  mkdir sch run log
+
+# make scripts for selfsched
+  cd ${SDR}
+  echo "" | tail -n+2 > ${SDR}/selfsched
+  rm ${SDR}/sch/*
+  for i in QC2CALLSET QC2STRICTCALLSET 
+  do
+    if [[ ${i} == "QC2CALLSET" ]]
+    then
+      VCF=${IDR}/DNA/LIVPM_dna.vcf.gz
+      COV=${IDR}/DNA/LIVPM_mds.txt
+    else
+      VCF=${IDR}/DNA/LIVPM_dna_strict.vcf.gz 
+      COV=${IDR}/DNA/LIVPM_mds_strict.txt
+    fi
+    for j in {1..30}
+    do 
+      for k in RNA PROTEIN RNAEDITING
+      do
+        echo ${i} ${j} ${k}
+        BED=${IDR}/${k}/${i}_nsv${j}.bed.gz
+        for l in {1..300}
+        do 
+          OUT=${RDR}/${k}/${i}_qtltoolsOutput_${j}_chunk${l}.txt
+          echo "QTLtools cis --vcf ${VCF} --bed ${BED} --permute 10000 --chunk ${l} 300 --out ${OUT} --cov ${COV}" >> ${SDR}/selfsched
+        done
+      done
+    done
+  done
+  wc -l ${SDR}/selfsched #54000 selfsched
+  split -a4 -d -l50 ${SDR}/selfsched ${SDR}/sch/selfsched_
+
+# run selfsched 
+  cd ${SDR}
+  for i in `l ${SDR}/sch/selfsched_???? | awk -F"_" '{print $NF}'`
+  do
+  echo '#!/bin/bash
+  #BSUB -q premium
+  #BSUB -P acc_psychgen
+  #BSUB -J selfsched_'${i}'
+  #BSUB -n 11
+  #BSUB -W 5:00
+  #BSUB -R "rusage[mem=50000]"
+  #BSUB -cwd '${SDR}'/log
+  #BSUB -oo selfsched_'${i}'.stdout
+  #BSUB -eo selfsched_'${i}'.stderr
+  #BSUB -L /bin/bash
+  module load qtltools/1.1 
+  module load tabix
+  module load selfsched
+  cd '${SDR}'/log 
+  export fstatus=selfsched_'${i}'.fstatus
+  mpirun -np 11 selfsched < '${SDR}'/sch/selfsched_'${i} > ${SDR}/run/selfsched_${i}.run
+  bsub < ${SDR}/run/selfsched_${i}.run
+  done
+
+# check jobs finished and clean up
+  #
+  #note: this checking process was complicated and not possible to track here in a neat way 
+  #
+  wc -l ${SDR}/selfsched #54000
+  find ${RDR}/ -wholename "*${RDR}/*qtltoolsOutput*chunk*.txt" | wc -l #49740
+
+# combine
+  cd ${SDR}
+  for i in QC2CALLSET QC2STRICTCALLSET
+  do
+    for j in {1..30}
+    do 
+      for k in RNA PROTEIN RNAEDITING
+      do cat ${RDR}/${k}/${i}_qtltoolsOutput_${j}_chunk*.txt > ${RDR}/${k}/${i}_qtltoolsOutput_${j}.txt
+      done
+    done
+  done
+
+# clean up
+  cd ${RDR}
+  rm ${RDR}/RNA/QC2{,STRICT}CALLSET*_chunk*.txt &
+  rm ${RDR}/PROTEIN/QC2{,STRICT}CALLSET*_chunk*.txt &
+  rm ${RDR}/RNAEDITING/QC2CALLSET*_chunk*.txt &
+  rm ${RDR}/RNAEDITING/QC2STRICTCALLSET*_chunk*.txt &
+  rm -rf ${SDR}/{selfsched,sch,run,log}
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/{RNA,PROTEIN,RNAEDITING}/{QC2CALLSET,QC2STRICTCALLSET}*txt
+#+END_SRC
+
+#+NAME: DONE|PRIMARY_QTL_STUFF|collate_qtltools_results
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: collate_qtltools_results
+
+############################################################
+# QTLtools output
+#
+# 1. phenotype ID
+# 2. chromosome ID of the phenotype
+# 3. start position of the phenotype
+# 4. end position of the phenotype
+# 5. strand orientation of the phenotype
+# 6. total number of variants tested in cis
+# 7. distance between the phenotype and the tested variant (accounting for strand orientation)
+# 8. ID of the top variant
+# 9. chromosome ID of the top variant
+# 10. start position of the top variant
+# 11. end position of the top variant
+# 12. number of degrees of freedom used to compute the P-values
+# 13. Dummy
+# 14. first parameter value of the fitted beta distribution
+# 15. second parameter value of the fitted beta distribution (it also gives the effective number of independent tests in the region)
+# 16. nominal P-value of association between the phenotype and the top variant in cis
+# 17. corresponding regression slope
+# 18. P-value of association adjusted for the number of variants tested in cis given by the direct method (i.e. empirircal P-value)
+# 19. P-value of association adjusted for the number of variants tested in cis given by the fitted beta distribution. 
+#      We strongly recommend to use this adjusted P-value in any downstream analysis
+#
+############################################################
+
+# setup
+  rm(list=ls())
+  library(qvalue)
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(patchwork)
+  setwd("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/")
+  cnames <- c( "gene", "chr", "tss", "end", "strand", "nvar", "distToTopVar", 
+              "IDTopVar", "chrTopVar", "startTopVar", "endTopVar", "nDF", "Dummy", 
+              "betaparam1", "betaparam2", "nominalPVal", "regressionSlope", "ppval", "bpval")
+  rmme <- c("chrTopVar", "startTopVar", "end", "endTopVar", "nDF", "Dummy", "betaparam1", "betaparam2")
+
+# read in results
+  myLst <- list("RNA"=list(), "PROTEIN"=list(), "RNAEDITING"=list())
+  for (i in names(myLst)){
+      for (j in Sys.glob(paste0(i,"/QC2CALLSET*txt"))){
+          nam <- basename(j)
+          nam <- gsub("QC2CALLSET_qtltoolsOutput_", "", nam)
+          nam <- gsub(".txt", "", nam)
+          nam <- paste0("nsv", nam)
+          add1 <- fread(j, header=F, sep=" ", col.names=cnames)
+          add2 <- fread(gsub("QC2CALLSET", "QC2STRICTCALLSET", j), header=F, sep=" ", col.names=cnames)
+          add1[,bonferroni := p.adjust(bpval, method="bonferroni")]
+          add2[,bonferroni := p.adjust(bpval, method="bonferroni")]
+          add1[,bh := p.adjust(bpval, method="fdr")]
+          add2[,bh := p.adjust(bpval, method="fdr")]
+          add1[,st := qvalue(bpval)$qvalues]
+          add2[,st := qvalue(bpval)$qvalues]
+          add1[,c(rmme):=NULL]
+          add2[,c(rmme):=NULL]
+          myLst[[i]][[nam]] <- list("QC2CALLSET"=add1, "QC2STRICTCALLSET"=add2)
+      }
+  }
+  #
+  # sanity check
+  #
+  sanitycheck <- c()
+  iter1 <- c("RNA", "PROTEIN", "RNAEDITING")
+  iter2 <- paste0("nsv",1:30)
+  iter3 <- c("QC2CALLSET", "QC2STRICTCALLSET")
+  for (i in iter1){
+      for (j in iter2){
+          for (k in iter3){  
+              add <- data.table(ome=i, nsv=j, callset=k, noutput=nrow(myLst[[i]][[j]][[k]]))
+              sanitycheck <- rbind(sanitycheck, add)
+          }          
+      }
+  }
+
+# count number of signif eqtls - nsv 1 through 30
+  resNSV <- c()
+  for (i in 1:30){
+      for (j in c("RNA", "PROTEIN", "RNAEDITING")){
+          x1 <- myLst[[j]][[paste0("nsv", i)]]$QC2CALLSET
+          x2 <- myLst[[j]][[paste0("nsv", i)]]$QC2STRICTCALLSET
+          ad1 <- rbind( data.table( omic=j, SET="QC2CALLSET", nSV=i, method="bonferroni", nEQTL=nrow(x1[bonferroni <= 0.05]) ), 
+                       data.table( omic=j, SET="QC2CALLSET", nSV=i, method="benjamini", nEQTL=nrow(x1[bh <= 0.1]) ), 
+                       data.table( omic=j, SET="QC2CALLSET", nSV=i, method="storey", nEQTL=nrow(x1[st <= 0.1]) ))
+          ad2 <- rbind( data.table( omic=j, SET="QC2STRICTCALLSET", nSV=i, method="bonferroni", nEQTL=nrow(x2[bonferroni <= 0.05]) ), 
+                       data.table( omic=j, SET="QC2STRICTCALLSET", nSV=i, method="benjamini", nEQTL=nrow(x2[bh <= 0.1]) ), 
+                       data.table( omic=j, SET="QC2STRICTCALLSET", nSV=i, method="storey", nEQTL=nrow(x2[st <= 0.1]) ))
+          resNSV <- rbind(resNSV, ad1, ad2)
+      }
+  }
+  ggplot(resNSV, aes(nSV, nEQTL, col=method)) + geom_point(size=3) + facet_grid(omic~SET, scales="free_y") + theme_base()
+
+# save
+  myBest <- resNSV[method=="storey" , .SD[which.max(nEQTL)], by = list(omic, SET)]
+  myOut <- list(fullResults=myLst, nEqtls=resNSV, best=myBest)
+  flOut <- "/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022.RDS"
+  saveRDS(myOut, file=flOut)
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022.RDS
+#+END_SRC
+
+
+* LIVPM INTERACTION QTL ANALYSES (fastqtl)
+
+#+NAME: DONE|INTERACTION_QTL_STUFF|prep_fastqtl_interaction_files
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: prep_fastqtl_interaction_files
+
+# setup
+  rm(list=ls())
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp/")
+
+# covariates file
+  cv1 <- fread("./data/runEQTL/20OCT2022/DNA/LIVPM_mds.txt")
+  cv2 <- fread("./data/runEQTL/20OCT2022/DNA/LIVPM_mds_strict.txt")
+  n361 <- colnames(cv1)[2:ncol(cv1)]
+  n342 <- colnames(cv2)[2:ncol(cv2)]
+
+# metadata 
+  met <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  met <- unique(met$covariates[,.(IID_ISMMS,mymet_postmortem)])
+  met[,IID_ISMMS:=gsub("_","-",IID_ISMMS)]
+  ad1 <- met[IID_ISMMS %in% n361]
+  ad2 <- met[IID_ISMMS %in% n342]
+
+# save
+  fwrite(ad1, row=F, col=F, quo=F, sep='\t', file="./data/runEQTL/20OCT2022/DNA/LIVPM_interaction.txt")
+  fwrite(ad2, row=F, col=F, quo=F, sep='\t', file="./data/runEQTL/20OCT2022/DNA/LIVPM_strict_interaction.txt")
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM{,_strict}_interaction.txt
+#+END_SRC
+
+#+NAME: DONE|INTERACTION_QTL_STUFF|prep_fastqtl_bed_files
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: prep_fastqtl_bed_files
+##
+## fastqtl bed format differs slightly than bed file format for QTLtools:
+##
+##   #Chr    start   end     TargetID   [IIDs]
+##
+
+# setup
+  module load tabix bedtools
+  SCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_reformat_bed_from_qtltools_to_fastqtl.sh
+  DIR=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022
+  SCR=/sc/arion/projects/psychgen/lbp/scratch/runEQTL/20OCT2022
+
+# run
+  cd ${SCR}
+  let X=0
+  for i in `find ${DIR}/ -wholename "*QC2*nsv*bed.gz" | grep -i fastqtl -v | grep RNAEDITING`
+  do
+    j=`echo ${i} | sed s/'.bed.gz'/'.fastqtl.bed.gz'/g`
+    mybsub psychgen tmp${X} 5000 0:15 premium 1 "sh ${SCRIPT} --input ${i} --output ${j} --scratch ${SCR}/tmp${X}"
+    let X=X+1
+  done
+
+# check 
+  cd ${SCR}
+  l *stdout | wc -l
+  grep Success *stdout | wc -l
+
+# list output
+  ls -1 /sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/{RNA,PROTEIN,RNAEDITING}/QC2*nsv*fastqtl*bed*gz | wc -l #180
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/{RNA,PROTEIN,RNAEDITING}/{QC2CALLSET,QC2STRICTCALLSET}*nsv*fastqtl.bed.gz
+#+END_SRC
+
+#+NAME: DONE|INTERACTION_QTL_STUFF|prep_fastqtl_bed_files_and_wgs_limited_to_strict_sites_for_interaction_model
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: PART1_prep_fastqtl_bed_files_and_wgs_limited_to_strict_sites_for_interaction_model
+
+# setup 
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp/data/")
+
+# wgs 
+  #
+  # gwas results 
+  #
+  gwas <- fread("./dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.gwas.assoc.logistic")[TEST=="ADD"]
+  #
+  # frequency stats
+  #
+  frq <- fread("./dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.frq.cc")
+  gwas <- merge(gwas, frq, by=intersect(colnames(gwas), colnames(frq)))
+  gwas[,COUNT_U:=round(NCHROBS_U*MAF_U,0)]
+  gwas[,COUNT_A:=round(NCHROBS_A*MAF_A,0)]
+  #
+  # strict set of snps to test in livpm*qtl interaction model
+  #
+  keepme <- gwas[P>0.05][COUNT_U>20 & COUNT_A>20]
+
+# bed files
+  bd1 <- fread("./runEQTL/20OCT2022/RNA/QC2CALLSET_nsv29.fastqtl.bed.gz")[,1:4]
+  bd2 <- fread("./runEQTL/20OCT2022/PROTEIN/QC2CALLSET_nsv30.fastqtl.bed.gz")[,1:4]
+  bd3 <- fread("./runEQTL/20OCT2022/RNAEDITING/QC2CALLSET_nsv11.fastqtl.bed.gz")[,1:4]
+  bd1 <- bd1[,.(TargetID, Chr=`#Chr`, Start=start-1000000, End=start+1000000)][!is.na(TargetID)]
+  bd2 <- bd2[,.(TargetID, Chr=`#Chr`, Start=start-1000000, End=start+1000000)][!is.na(TargetID)]
+  bd3 <- bd3[,.(TargetID, Chr=`#Chr`, Start=start-1000000, End=start+1000000)][!is.na(TargetID)]
+  bd1[Start<0,Start:=0]
+  bd2[Start<0,Start:=0]
+  bd3[Start<0,Start:=0]
+  bd4 <- keepme[,.(Chr=as.character(CHR), Start=BP, End=BP, SNP)]
+
+# remove sex chr
+  bd1 <- bd1[!Chr %in% c("X", "Y")]
+  bd2 <- bd2[!Chr %in% c("X", "Y")]
+  bd3 <- bd3[!Chr %in% c("X", "Y")]
+  bd4 <- bd4[!Chr %in% c("23", "24")]
+ 
+# overlap
+  setkey(bd1, Chr, Start, End)
+  setkey(bd2, Chr, Start, End)
+  setkey(bd3, Chr, Start, End)
+  setkey(bd4, Chr, Start, End)
+
+# any link between amount gene changes after deduping and whether it overlaps other genes on opposite strand?
+  bd1olap <- foverlaps(bd4, bd1, type="any")[!is.na(TargetID)]
+  bd2olap <- foverlaps(bd4, bd2, type="any")[!is.na(TargetID)]
+  bd3olap <- foverlaps(bd4, bd3, type="any")[!is.na(TargetID)]
+  bd1kp <- unique(bd1olap[,.(TargetID)])$TargetID
+  bd2kp <- unique(bd2olap[,.(TargetID)])$TargetID
+  bd3kp <- unique(bd3olap[,.(TargetID)])$TargetID
+  bd1kpsnp <- unique(bd1olap[,.(SNP)])
+  bd2kpsnp <- unique(bd2olap[,.(SNP)])
+  bd3kpsnp <- unique(bd3olap[,.(SNP)])
+  length(bd1kp) #[1] 19785
+  length(bd2kp) #[1] 5125
+  length(bd3kp) #[1] 51499
+  nrow(bd1kpsnp) #[1] 2556643
+  nrow(bd2kpsnp) #[1] 2263407
+  nrow(bd3kpsnp) #[1] 2213574
+  kpsnp <- unique(rbind(bd1kpsnp,bd2kpsnp,bd3kpsnp))
+  nrow(kpsnp) #[1] 2563672
+
+# make new bed
+  bd1 <- fread("./runEQTL/20OCT2022/RNA/QC2CALLSET_nsv29.fastqtl.bed.gz")[TargetID %in% bd1kp]
+  bd2 <- fread("./runEQTL/20OCT2022/PROTEIN/QC2CALLSET_nsv30.fastqtl.bed.gz")[TargetID %in% bd2kp]
+  bd3 <- fread("./runEQTL/20OCT2022/RNAEDITING/QC2CALLSET_nsv11.fastqtl.bed.gz")[TargetID %in% bd3kp]
+
+# save new bed
+  o1 <- "./runEQTL/20OCT2022/RNA/QC2CALLSET_nsv29.intsnps.fastqtl.bed"
+  o2 <- "./runEQTL/20OCT2022/PROTEIN/QC2CALLSET_nsv30.intsnps.fastqtl.bed"
+  o3 <- "./runEQTL/20OCT2022/RNAEDITING/QC2CALLSET_nsv11.intsnps.fastqtl.bed"
+  fwrite(bd1, row=F, col=T, quo=F, sep='\t', file=o1)
+  fwrite(bd2, row=F, col=T, quo=F, sep='\t', file=o2)
+  fwrite(bd3, row=F, col=T, quo=F, sep='\t', file=o3)
+
+# save snp list
+  o4 <- "./dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.gwas.assoc.logistic.keepme.snplist"
+  fwrite(kpsnp, row=F, col=F, quo=F, sep='\t', file=o4)
+
+#+END_SRC
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: PART2_prep_fastqtl_bed_files_and_wgs_limited_to_strict_sites_for_interaction_model
+
+# setup 
+  ml tabix bcftools
+  BD1=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNA/QC2CALLSET_nsv29.intsnps.fastqtl.bed
+  BD2=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/PROTEIN/QC2CALLSET_nsv30.intsnps.fastqtl.bed
+  BD3=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNAEDITING/QC2CALLSET_nsv11.intsnps.fastqtl.bed
+  SNP=/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.gwas.assoc.logistic.keepme.snplist
+  VCF=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_dna.vcf.gz
+  VC2=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_dna_interaction.vcf.gz
+
+# compress bed files
+  cat ${BD1} | bgzip > ${BD1}.gz && tabix -p bed ${BD1}.gz 
+  cat ${BD2} | bgzip > ${BD2}.gz && tabix -p bed ${BD2}.gz 
+  cat ${BD3} | bgzip > ${BD3}.gz && tabix -p bed ${BD3}.gz 
+
+# subset vcf to sites to keep 
+  bcftools view --include ID==@${SNP} ${VCF} | bgzip > ${VC2} && tabix ${VC2}
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNA/QC2CALLSET_nsv29.intsnps.fastqtl.bed.gz
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/PROTEIN/QC2CALLSET_nsv30.intsnps.fastqtl.bed.gz
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNAEDITING/QC2CALLSET_nsv11.intsnps.fastqtl.bed.gz
+##/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_dna_interaction.vcf.gz 
+#+END_SRC
+
+#+NAME: DONE|INTERACTION_QTL_STUFF|run_fastqtl_interaction_model
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: run_fastqtl_interaction_model
+
+# setup
+  ml fastqtl/2.184
+  VCF=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_dna_interaction.vcf.gz
+  MDS=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds_tsv.txt
+  MD2=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds_strict_tsv.txt
+  INT=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_interaction.txt
+  RBD=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNA/QC2CALLSET_nsv29.intsnps.fastqtl.bed.gz
+  PBD=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/PROTEIN/QC2CALLSET_nsv30.intsnps.fastqtl.bed.gz
+  EBD=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNAEDITING/QC2CALLSET_nsv11.intsnps.fastqtl.bed.gz
+  SCR=/sc/arion/projects/psychgen/lbp/scratch/runEQTL/20OCT2022/LIVPM_INTERACTION
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/20OCT2022/LIVPM_INTERACTION
+  RDR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION
+
+# make mds file tab separated (fastqtl fails otherwise)
+  I1=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds.txt
+  O1=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds_tsv.txt
+  I2=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds_strict.txt
+  O2=/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds_strict_tsv.txt
+  cat ${I1} | tr ' ' '\t' > ${O1}
+  cat ${I2} | tr ' ' '\t' > ${O2}
+
+# run 
+  cd ${SDR}
+  for i in {1..500}
+  do 
+    RLG=${SDR}/RNA_QC2CALLSET_nsv29_chunk${i}.perm100.log
+    ROT=${RDR}/RNA_QC2CALLSET_nsv29_chunk${i}.perm100.results
+    RSH=${SDR}/RNA_QC2CALLSET_nsv29_chunk${i}.perm100.sh
+    PLG=${SDR}/PROTEIN_QC2CALLSET_nsv30_chunk${i}.perm100.log
+    POT=${RDR}/PROTEIN_QC2CALLSET_nsv30_chunk${i}.perm100.results
+    PSH=${SDR}/PROTEIN_QC2CALLSET_nsv30_chunk${i}.perm100.sh
+    ELG=${SDR}/RNAEDITING_QC2CALLSET_nsv11_chunk${i}.perm100.log
+    EOT=${RDR}/RNAEDITING_QC2CALLSET_nsv11_chunk${i}.perm100.results
+    ESH=${SDR}/RNAEDITING_QC2CALLSET_nsv11_chunk${i}.perm100.sh
+    echo "ml fastqtl/2.184" > ${RSH}
+    echo "ml fastqtl/2.184" > ${PSH}
+    echo "ml fastqtl/2.184" > ${ESH}
+    echo "fastQTL --log ${RLG} --vcf ${VCF} --bed ${RBD} --cov ${MDS} --out ${ROT} --permute 100 --interaction ${INT} --chunk ${i} 500" >> ${RSH}
+    echo "fastQTL --log ${PLG} --vcf ${VCF} --bed ${PBD} --cov ${MDS} --out ${POT} --permute 100 --interaction ${INT} --chunk ${i} 500" >> ${PSH}
+    echo "fastQTL --log ${ELG} --vcf ${VCF} --bed ${EBD} --cov ${MDS} --out ${EOT} --permute 100 --interaction ${INT} --chunk ${i} 500" >> ${ESH}
+    mybsub psychgen `basename ${RSH}` 5000 5:00 premium 1 "sh ${RSH}"
+    mybsub psychgen `basename ${PSH}` 5000 5:00 premium 1 "sh ${PSH}"
+    mybsub psychgen `basename ${ESH}` 5000 5:00 premium 1 "sh ${ESH}"
+  done
+
+# check
+  cd ${SDR}
+  ls RNA_*sh | sed s/'.sh'/''/g | sort | uniq > rna_all
+  ls PROTEIN_*sh | sed s/'.sh'/''/g | sort | uniq > pro_all
+  ls RNAEDITING_*sh | sed s/'.sh'/''/g | sort | uniq > red_all
+  ls RNA_*stdout | sed s/'.sh.stdout'/''/g | sort | uniq > rna_sent
+  ls PROTEIN_*stdout | sed s/'.sh.stdout'/''/g | sort | uniq > pro_sent
+  ls RNAEDITING_*stdout | sed s/'.sh.stdout'/''/g | sort | uniq > red_sent
+  fgrep -m1 Success RNA_*stdout | awk -F".sh" '{print $1}' | sort | uniq > rna_success
+  fgrep -m1 Success PROTEIN_*stdout | awk -F".sh" '{print $1}' | sort | uniq > pro_success
+  fgrep -m1 Success RNAEDITING_*stdout | awk -F".sh" '{print $1}' | sort | uniq > red_success
+  comm -23 rna_sent rna_success > rna_fail
+  comm -23 pro_sent pro_success > pro_fail
+  comm -23 red_sent red_success > red_fail
+  wc -l rna_sent rna_success rna_fail pro_sent pro_success pro_fail red_sent red_success red_fail 
+  ##
+  ##  500 rna_sent
+  ##  500 rna_success
+  ##    0 rna_fail
+  ##  500 pro_sent
+  ##  500 pro_success
+  ##    0 pro_fail
+  ##  500 red_sent
+  ##  500 red_success
+  ##    0 red_fail
+  ##
+
+# combine
+  cat ${RDR}/RNA_*results > ${RDR}/RNA_QC2CALLSET_nsv29.perm100.results
+  cat ${RDR}/PROTEIN_*results > ${RDR}/PROTEIN_QC2CALLSET_nsv30.perm100.results
+  cat ${RDR}/RNAEDITING_*results > ${RDR}/RNAEDITING_QC2CALLSET_nsv11.perm100.results
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/*results
+#+END_SRC
+
+#+NAME: DONE|INTERACTION_QTL_STUFF|collate_fastqtl_interaction_model_results
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: collate_fastqtl_interaction_model_results
+##
+## What are the columns output by fastqtl interaction mode? 
+##
+##   Had to derive this manually by reading the source code: 
+##   https://github.com/francois-a/fastqtl/blob/master/src/analysisPermutationInteraction.cpp
+##
+##   Column 1: Phenotype
+##   Column 2: Number of variants tested
+##   Column 3: Beta distribution parameter 1
+##   Column 4: Beta distribution parameter 2
+##   Column 5: Estimate of the number of degrees of freedom
+##   Column 6: ID of most associated variant site
+##   Column 7: "nominal_distance"
+##   Column 8: getPvalue(nominal_correlation, sample_count - 2 - covariate_engine->nCovariates());
+##   Column 9: getPvalue(nominal_correlation, permuted_correlations)
+##   Column 10: pbeta(pval_fdo, beta_shape1, beta_shape2, 1, 0)
+##              pval_fdo = getPvalue(nominal_correlation, true_df)
+##   
+
+# setup
+  rm(list=ls())
+  library(qvalue)
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(patchwork)
+  setwd("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION")
+
+# read in interaction qtl results
+  rres <- as.data.table(read.table("RNA_QC2CALLSET_nsv29.perm100.results", header=F, stringsAsFactors=F))
+  pres <- as.data.table(read.table("PROTEIN_QC2CALLSET_nsv30.perm100.results", header=F, stringsAsFactors=F))
+  eres <- as.data.table(read.table("RNAEDITING_QC2CALLSET_nsv11.perm100.results", header=F, stringsAsFactors=F))
+  colnames(rres) = c("pid", "nvar", "shape1", "shape2", "df", "sid", "dist", "npval", "ppval", "bpval")
+  colnames(pres) = c("pid", "nvar", "shape1", "shape2", "df", "sid", "dist", "npval", "ppval", "bpval")
+  colnames(eres) = c("pid", "nvar", "shape1", "shape2", "df", "sid", "dist", "npval", "ppval", "bpval")
+  rres$ome <- "rna"
+  pres$ome <- "protein"
+  eres$ome <- "rnaediting"
+  rres <- rres[!is.na(ppval)]
+  pres <- pres[!is.na(ppval)]
+  eres <- eres[!is.na(ppval)]
+  myres <- rbind(rres, pres, eres)
+
+# add gwas sumstats and snp frequencies
+  gwas <- fread("/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.gwas.assoc.logistic")[TEST=="ADD"]
+  frq <- fread("/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022.frq.cc")
+  gwas <- merge(gwas, frq, by=intersect(colnames(gwas), colnames(frq)))
+  gwas[,COUNT_U:=round(NCHROBS_U*MAF_U,0)]
+  gwas[,COUNT_A:=round(NCHROBS_A*MAF_A,0)]
+  colnames(gwas) = paste0("GWAS.", colnames(gwas))
+  myres <- merge(myres, gwas, by.x="sid", by.y="GWAS.SNP")
+  myres[,GWAS.KEEPME:=FALSE]
+  myres[GWAS.P>0.05 & GWAS.COUNT_U>20 & GWAS.COUNT_A>20, GWAS.KEEPME:=TRUE] #should all be true, sanity check
+
+# save
+  saveRDS(myres, "RESULTS_COMBINED.RDS")
+  rnasites <- unique(myres[ome=="rna" & bpval<0.05,.(sid)])
+  prosites <- unique(myres[ome=="protein" & bpval<0.05,.(sid)])
+  redsites <- unique(myres[ome=="rnaediting" & bpval<0.05,.(sid)])
+  fwrite(rnasites, col=F, row=F, quo=F, sep='\t', file="RNA_INTERACTION_QTL_SITES.txt")
+  fwrite(prosites, col=F, row=F, quo=F, sep='\t', file="PROTEIN_INTERACTION_QTL_SITES.txt")
+  fwrite(redsites, col=F, row=F, quo=F, sep='\t', file="RNAEDITING_INTERACTION_QTL_SITES.txt")
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/RESULTS_COMBINED.RDS
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/{RNA,PROTEIN,RNAEDITING}_INTERACTION_QTL_SITES.txt
+#+END_SRC
+
+#+NAME: DONE|INTERACTION_QTL_STUFF|subset_plink_for_interaction_qtl
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: subset_plink_for_interaction_qtl
+##
+## from https://www.cog-genomics.org/plink/1.9/data for recode usage (reworded slightly):
+##   
+## The 'A' modifier causes an additive (0/1/2) component file, suitable for loading from R, to be generated. 
+##  + By default, A1 alleles are counted; this can be customized with --recode-allele.
+##    In that case, --recode-allele's input file should have variant IDs in the first column and allele IDs in the second.
+##  + By default, the header line for .raw files only names the counted alleles. 
+##    To include the alternate allele codes as well, add the 'include-alt' modifier.
+## The 'A-transpose' modifier causes a variant-major additive component file to be generated. 
+##  + This can also be used with --recode-allele.
+##  + https://www.cog-genomics.org/plink/1.9/formats#traw (shows colnames)
+##
+
+# setup 
+  ml plink
+  EQR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/RNA_INTERACTION_QTL_SITES.txt
+  EQP=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/PROTEIN_INTERACTION_QTL_SITES.txt
+  EQD=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/RNAEDITING_INTERACTION_QTL_SITES.txt
+  ALL=/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022
+  ODR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/
+
+# run 
+  cd ${ODR}
+  O1=${ODR}/RNA_QC2CALLSET_nsv29_interactionQTL
+  O2=${ODR}/PROTEIN_QC2CALLSET_nsv30_interactionQTL
+  O3=${ODR}/RNAEDITING_QC2CALLSET_nsv11_interactionQTL
+  plink --bfile ${ALL} --extract ${EQR} --recode A-transpose --out ${O1}
+  plink --bfile ${ALL} --extract ${EQP} --recode A-transpose --out ${O2}
+  plink --bfile ${ALL} --extract ${EQD} --recode A-transpose --out ${O3}
+
+##CODE BLOCK OUTPUT:
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/RNA_QC2CALLSET_nsv29_interactionQTL.traw
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/PROTEIN_QC2CALLSET_nsv30_interactionQTL.traw
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/RNAEDITING_QC2CALLSET_nsv11_interactionQTL.traw
+#+END_SRC
+
+#+NAME: DONE|INTERACTION_QTL_STUFF|direction_of_effect_for_interaction_qtls
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: direction_of_effect_for_interaction_qtls
+
+##
+## SETUP ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+
+rm(list=ls())
+suppressMessages(library(data.table))
+suppressMessages(library(readxl))
+suppressMessages(library(ggplot2))
+suppressMessages(library(ggthemes))
+suppressMessages(library(variancePartition))
+setwd("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION")
+
+##
+## SNP DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+
+genRna <- fread("RNA_QC2CALLSET_nsv29_interactionQTL.traw", na=c("NA", ".", "", "-9"))
+genPro <- fread("PROTEIN_QC2CALLSET_nsv30_interactionQTL.traw", na=c("NA", ".", "", "-9"))
+genRed <- fread("RNAEDITING_QC2CALLSET_nsv11_interactionQTL.traw", na=c("NA", ".", "", "-9"))
+genRna[,`(C)M`:=NULL]
+genPro[,`(C)M`:=NULL]
+genRed[,`(C)M`:=NULL]
+
+##
+## PCA DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+
+pca <- fread("/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/DNA/LIVPM_mds_tsv.txt")
+pcx <- as.matrix(pca[,2:ncol(pca)])
+rownames(pcx) <- pca$id
+pcx <- as.data.table(t(pcx), keep.rownames="IID")
+
+##
+## PHENOTYPE DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+
+pmxRna <- "/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNA/QC2CALLSET_nsv29.fastqtl.bed.gz"
+pmxPro <- "/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/PROTEIN/QC2CALLSET_nsv30.intsnps.fastqtl.bed.gz"
+pmxRed <- "/sc/arion/projects/psychgen/lbp/data/runEQTL/20OCT2022/RNAEDITING/QC2CALLSET_nsv11.intsnps.fastqtl.bed.gz"
+bedRna <- fread(pmxRna)
+bedPro <- fread(pmxPro)
+bedRed <- fread(pmxRed)
+
+##
+## LIVPM STATUS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+
+lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+add <- lbp$covariates[,.(IID_ISMMS, mymet_postmortem)]
+add[mymet_postmortem==1,LIVPM:="PM"]
+add[mymet_postmortem==0,LIVPM:="LIV"]
+add <- add[,.(IID=IID_ISMMS,LIVPM)]
+add[,IID:=gsub("_","-",IID)]
+add <- unique(add)
+
+##
+## RUN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+
+myout <- c()
+myres <- readRDS("RESULTS_COMBINED.RDS")
+frm <- EXP ~ GTY + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10
+rnasites <- unique(myres[ome=="rna" & bpval<0.05,.(feature=pid, snp=sid)])
+prosites <- unique(myres[ome=="protein" & bpval<0.05,.(feature=pid, snp=sid)])
+redsites <- unique(myres[ome=="rnaediting" & bpval<0.05,.(feature=pid, snp=sid)])
+
+## RNA
+for (i in 1:nrow(rnasites)){
+
+    print(i)
+
+    ## define variables
+    phe <- rnasites[i]$feature
+    snp <- rnasites[i]$snp
+    bed <- copy(bedRna)
+    gen <- copy(genRna)
+
+    ## process expression data 
+    exp <- t(bed[TargetID==phe,])
+    exp <- as.data.table(exp[5:ncol(bed),,drop=F], keep.rownames="IID")[,.(IID,EXP=as.numeric(V1))]
+
+    ## process genotype data 
+    gen <- gen[SNP==snp]
+    gen <- as.data.table(t(gen), keep.rownames="IID")[6:ncol(gen),.(IID, GTY=as.integer(V1))][!is.na(GTY)]
+    gen[,IID:=tstrsplit(IID, split="_", fixed=T, keep=1L)]
+    
+    ## combine
+    dat <- merge(exp, gen)
+    dat <- merge(dat, pcx)
+    dat <- merge(dat, add)
+    curN <- nrow(dat)
+
+    ## run
+    lvRes <- summary(lm(frm, data=dat[LIVPM=="LIV"]))
+    pmRes <- summary(lm(frm, data=dat[LIVPM=="PM"]))
+    lvRes <- as.data.table(lvRes$coef["GTY",,drop=F])
+    pmRes <- as.data.table(pmRes$coef["GTY",,drop=F])
+    colnames(lvRes) <- c("LIV.estimate", "LIV.se", "LIV.t", "LIV.p")
+    colnames(pmRes) <- c("PM.estimate", "PM.se", "PM.t", "PM.p")
+    cur <- data.table("ome"="rna", "feature"=phe, "snp"=snp, 
+                         "nliv"=nrow(dat[LIVPM=="LIV"]), "npm"=nrow(dat[LIVPM=="PM"]), cbind(lvRes, pmRes))
+    myout <- rbind(myout, cur)    
+}
+
+## RNAEDITING
+for (i in 1:nrow(redsites)){
+
+    print(i)
+
+    ## define variables
+    phe <- redsites[i]$feature
+    snp <- redsites[i]$snp
+    bed <- copy(bedRed)
+    gen <- copy(genRed)
+
+    ## process expression data 
+    exp <- t(bed[TargetID==phe,])
+    exp <- as.data.table(exp[5:ncol(bed),,drop=F], keep.rownames="IID")[,.(IID,EXP=as.numeric(V1))]
+
+    ## process genotype data 
+    gen <- gen[SNP==snp]
+    gen <- as.data.table(t(gen), keep.rownames="IID")[6:ncol(gen),.(IID, GTY=as.integer(V1))][!is.na(GTY)]
+    gen[,IID:=tstrsplit(IID, split="_", fixed=T, keep=1L)]
+    
+    ## combine
+    dat <- merge(exp, gen)
+    dat <- merge(dat, pcx)
+    dat <- merge(dat, add)
+
+    ## run
+    lvRes <- summary(lm(frm, data=dat[LIVPM=="LIV"]))
+    pmRes <- summary(lm(frm, data=dat[LIVPM=="PM"]))
+    lvRes <- as.data.table(lvRes$coef["GTY",,drop=F])
+    pmRes <- as.data.table(pmRes$coef["GTY",,drop=F])
+    colnames(lvRes) <- c("LIV.estimate", "LIV.se", "LIV.t", "LIV.p")
+    colnames(pmRes) <- c("PM.estimate", "PM.se", "PM.t", "PM.p")
+    cur <- data.table("ome"="rnaediting", "feature"=phe, "snp"=snp, 
+                         "nliv"=nrow(dat[LIVPM=="LIV"]), "npm"=nrow(dat[LIVPM=="PM"]), cbind(lvRes, pmRes))
+    myout <- rbind(myout, cur)    
+}
+
+## PROTEIN
+for (i in 1:nrow(prosites)){
+
+    print(i)
+
+    ## define variables
+    phe <- prosites[i]$feature
+    snp <- prosites[i]$snp
+    bed <- copy(bedPro)
+    gen <- copy(genPro)
+
+    ## process expression data 
+    exp <- t(bed[TargetID==phe,])
+    exp <- as.data.table(exp[5:ncol(bed),,drop=F], keep.rownames="IID")[,.(IID,EXP=as.numeric(V1))]
+
+    ## process genotype data 
+    gen <- gen[SNP==snp]
+    gen <- as.data.table(t(gen), keep.rownames="IID")[6:ncol(gen),.(IID, GTY=as.integer(V1))][!is.na(GTY)]
+    gen[,IID:=tstrsplit(IID, split="_", fixed=T, keep=1L)]
+    
+    ## combine
+    dat <- merge(exp, gen)
+    dat <- merge(dat, pcx)
+    dat <- merge(dat, add)
+
+    ## run
+    lvRes <- summary(lm(frm, data=dat[LIVPM=="LIV"]))
+    pmRes <- summary(lm(frm, data=dat[LIVPM=="PM"]))
+    lvRes <- as.data.table(lvRes$coef["GTY",,drop=F])
+    pmRes <- as.data.table(pmRes$coef["GTY",,drop=F])
+    colnames(lvRes) <- c("LIV.estimate", "LIV.se", "LIV.t", "LIV.p")
+    colnames(pmRes) <- c("PM.estimate", "PM.se", "PM.t", "PM.p")
+    cur <- data.table("ome"="protein", "feature"=phe, "snp"=snp, 
+                         "nliv"=nrow(dat[LIVPM=="LIV"]), "npm"=nrow(dat[LIVPM=="PM"]), cbind(lvRes, pmRes))
+    myout <- rbind(myout, cur)    
+}
+
+##
+## SAVE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+
+saveRDS(myout, file="RESULTS_COMBINED_DIRECTION_OF_EFFECT.RDS")
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION/RESULTS_COMBINED_DIRECTION_OF_EFFECT.RDS
+#+END_SRC
+
+#+NAME: WIP|INTERACTION_QTL_STUFF|analyses
+#+BEGIN_SRC R
+##CODE BLOCK: some initial analyses of the interaction qtl output
+
+# setup
+  rm(list=ls())
+  library(qvalue)
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(patchwork)
+  setwd("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/LIVPM_INTERACTION")
+
+# histograms
+  p1 <- ggplot(myres, aes(ppval)) + geom_histogram(fill="white", col="black") + theme_base() + facet_wrap(~ome, scales="free_y")
+
+# pi1 values
+  1-pi0est(rres$ppval)$pi0 #[1] 0.1194161
+  1-pi0est(pres$ppval)$pi0 #[1] 0
+  1-pi0est(eres$ppval)$pi0 #[1] 0
+
+# qqplots
+  rres <- rres[order(ppval, decreasing=F)]
+  pres <- pres[order(ppval, decreasing=F)]
+  eres <- eres[order(ppval, decreasing=F)]
+  o1 <- -log10(rres$ppval)
+  o2 <- -log10(pres$ppval)
+  o3 <- -log10(eres$ppval)
+  e1 <- -log10( ppoints(length(rres$ppval) ))
+  e2 <- -log10( ppoints(length(pres$ppval) ))
+  e3 <- -log10( ppoints(length(eres$ppval) ))
+  pd <- rbind( data.table( ome="rna", sid=rres$sid, observed=o1, expected=e1 ),
+              data.table( ome="protein", sid=pres$sid, observed=o2, expected=e2 ),
+              data.table( ome="rnaediting", sid=eres$sid, observed=o3, expected=e3 ))
+  pd <- merge(pd, gwas, by.x="sid", by.y="GWAS.SNP")
+  p2 <- ggplot(pd, aes(expected,observed,col=-log10(GWAS.P))) + 
+       scale_color_gradient(low = "blue", high = "red") +
+       geom_point(alpha=0.3) + 
+       theme_base() + 
+       facet_wrap(~ome) +
+       geom_abline(intercept = 0, slope = 1, col="red", lty="dotted") 
+  cor.test( -log10(pd[ome=="rna"]$GWAS.P), pd[ome=="rna"]$observed, method="spearman" )$estimate #0.001159151
+  cor.test( -log10(pd[ome=="rna"]$GWAS.P), pd[ome=="rna"]$observed, method="spearman" )$p.value #0.8704909
+  cor.test( -log10(pd[ome=="protein"]$GWAS.P), pd[ome=="protein"]$observed, method="spearman" )$estimate #-0.01538652
+  cor.test( -log10(pd[ome=="protein"]$GWAS.P), pd[ome=="protein"]$observed, method="spearman" )$p.value #0.2707645
+  cor.test( -log10(pd[ome=="rnaediting"]$GWAS.P), pd[ome=="rnaediting"]$observed, method="spearman"  )$estimate #-0.003492552 
+  cor.test( -log10(pd[ome=="rnaediting"]$GWAS.P), pd[ome=="rnaediting"]$observed, method="spearman"  )$p.value #0.4330101
+  cor.test( pd[ome=="rna"]$GWAS.MAF_A, pd[ome=="rna"]$observed, method="spearman" )$estimate #0.006766928
+  cor.test( pd[ome=="rna"]$GWAS.MAF_A, pd[ome=="rna"]$observed, method="spearman" )$p.value # 0.341208
+  cor.test( pd[ome=="protein"]$GWAS.MAF_A, pd[ome=="protein"]$observed, method="spearman"  )$estimate #0.02434622
+  cor.test( pd[ome=="protein"]$GWAS.MAF_A, pd[ome=="protein"]$observed, method="spearman"  )$p.value #0.08137605
+  cor.test( pd[ome=="rnaediting"]$GWAS.MAF_A, pd[ome=="rnaediting"]$observed, method="spearman"  )$estimate #0.02055173
+  cor.test( pd[ome=="rnaediting"]$GWAS.MAF_A, pd[ome=="rnaediting"]$observed, method="spearman"  )$p.value #3.946513e-06
+
+# plot
+  pdf("~/www/figures/lbp/tmp.pdf", h=14, w=20)
+    show(p1)
+    show(p2)
+  dev.off()
+
+
+# interaction qtl overlap with (a) main livpm de and (b) main qtl analyses
+  #
+  #rna 
+  #
+  main <- readRDS("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE/QTL_VE_RESULTS_25OCT2022.RDS")
+  add <- main$rna[,.(pid=gene, eqtl_livpm)]
+  lbp <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  de <- lbp$livpmDE
+  de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+  de[,livpmDE_DEG:="NONE"]
+  de[DEG=="DEG" & LFC=="POSLFC",livpmDE_DEG:="PM"]
+  de[DEG=="DEG" & LFC=="NEGLFC",livpmDE_DEG:="LIV"]
+  add2 <- de[,.(pid=gene, livpmDE_DEG)]
+  qt1 <- myres[ome=="rna"]
+  qt1[,isIntQtl:=FALSE]
+  qt1[ppval<0.05,isIntQtl:=TRUE]
+  qt1 <- merge(qt1, add, by="pid") 
+  qt1[,isMainQtl:=FALSE]
+  qt1[eqtl_livpm!="NONE",isMainQtl:=TRUE]
+  qt1[,isIntQtlOnly:=FALSE]
+  qt1[isIntQtl==TRUE & isMainQtl==FALSE,isIntQtlOnly:=TRUE]
+  qt1 <- merge(qt1, add2, by="pid") 
+  qt1[,isDeg:=FALSE]
+  qt1[,isLvDeg:=FALSE]
+  qt1[,isPmDeg:=FALSE]
+  qt1[livpmDE_DEG!="NONE",isDeg:=TRUE]
+  qt1[livpmDE_DEG=="LIV",isLvDeg:=TRUE]
+  qt1[livpmDE_DEG=="PM",isPmDeg:=TRUE]
+  qt1[,isIntQtl:=factor(isIntQtl, levels=c("TRUE", "FALSE"))]
+  qt1[,isMainQtl:=factor(isMainQtl, levels=c("TRUE", "FALSE"))]
+  qt1[,isIntQtlOnly:=factor(isIntQtlOnly, levels=c("TRUE", "FALSE"))]
+  qt1[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+  qt1[,isLvDeg:=factor(isLvDeg, levels=c("TRUE", "FALSE"))]
+  qt1[,isPmDeg:=factor(isPmDeg, levels=c("TRUE", "FALSE"))]
+  fisher.test(table(qt1$isIntQtl, qt1$isMainQtl))
+  fisher.test(table(qt1$isIntQtl, qt1$isDeg))
+  fisher.test(table(qt1$isIntQtlOnly, qt1$isDeg))
+  fisher.test(table(qt1$isIntQtlOnly, qt1$isLvDeg)) #or=0.7190073, p=4.058e-05
+  fisher.test(table(qt1$isIntQtlOnly, qt1$isPmDeg)) #or=1.249603, p=0.005071
+  #
+  # protein
+  #
+  main <- readRDS("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE/QTL_VE_RESULTS_25OCT2022.RDS")
+  de <- readRDS("/sc/arion/projects/psychgen/lbp/results/LBP_LIVPM_PROTEIN_DE_INPUT_DATA_AND_RESULTS_USING_LELQC_19OCT2022.RDS")$livpmDE
+  de[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1L)]
+  de[,livpmDE_DEG:=LIVPM]
+  add2 <- de[,.(pid=gene, livpmDE_DEG)][!is.na(pid)]
+  add <- main$protein[,.(pid=gene, eqtl_livpm)]
+  qt2 <- myres[ome=="protein"]
+  qt2[,isIntQtl:=FALSE]
+  qt2[ppval<0.05,isIntQtl:=TRUE]
+  qt2 <- merge(qt2, add, by="pid") 
+  qt2[,isMainQtl:=FALSE]
+  qt2[eqtl_livpm!="NONE",isMainQtl:=TRUE]
+  qt2[,isIntQtlOnly:=FALSE]
+  qt2[isIntQtl==TRUE & isMainQtl==FALSE,isIntQtlOnly:=TRUE]
+  qt2 <- merge(qt2, add2, by="pid") 
+  qt2[,isDeg:=FALSE]
+  qt2[,isLvDeg:=FALSE]
+  qt2[,isPmDeg:=FALSE]
+  qt2[livpmDE_DEG!="NONE",isDeg:=TRUE]
+  qt2[livpmDE_DEG=="LIV",isLvDeg:=TRUE]
+  qt2[livpmDE_DEG=="PM",isPmDeg:=TRUE]
+  qt2[,isIntQtl:=factor(isIntQtl, levels=c("TRUE", "FALSE"))]
+  qt2[,isMainQtl:=factor(isMainQtl, levels=c("TRUE", "FALSE"))]
+  qt2[,isIntQtlOnly:=factor(isIntQtlOnly, levels=c("TRUE", "FALSE"))]
+  qt2[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+  qt2[,isLvDeg:=factor(isLvDeg, levels=c("TRUE", "FALSE"))]
+  qt2[,isPmDeg:=factor(isPmDeg, levels=c("TRUE", "FALSE"))]
+  fisher.test(table(qt2$isIntQtl, qt2$isMainQtl))
+  fisher.test(table(qt2$isIntQtl, qt2$isDeg))
+  fisher.test(table(qt2$isIntQtlOnly, qt2$isDeg))
+  fisher.test(table(qt2$isIntQtlOnly, qt2$isLvDeg), alternative="less") #or=0.7701426, p=0.033
+  fisher.test(table(qt2$isIntQtlOnly, qt2$isPmDeg), alternative="greater") #or=1.336688, p=0.01213
+
+
+#+END_SRC
+
+
+* VARIANCE EXPLAINED BY QTL ANALYSES (variancePartition)
+
+#+NAME: DONE|VE_BY_QTL_STUFF|list_eqtls
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: list qtl for variance explained analyses
+
+# setup
+  rm(list=ls())
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/")
+
+# read in results
+  myLst <- readRDS("RESULTS_UPDATED24OCT2022.RDS")
+
+# write
+  dout1 <- unique(data.table( SNP=myLst$fullResults$RNA$nsv29$QC2CALLSET$IDTopVar ))
+  dout2 <- unique(data.table( SNP=myLst$fullResults$PROTEIN$nsv30$QC2CALLSET$IDTopVar ))
+  dout3 <- unique(data.table( SNP=myLst$fullResults$RNAEDITING$nsv11$QC2CALLSET$IDTopVar ))
+  fout1 <- "RESULTS_UPDATED24OCT2022_RNA_QC2CALLSET_nsv29_IDTopVar.txt"
+  fout2 <- "RESULTS_UPDATED24OCT2022_PROTEIN_QC2CALLSET_nsv30_IDTopVar.txt"
+  fout3 <- "RESULTS_UPDATED24OCT2022_RNAEDITING_QC2CALLSET_nsv11_IDTopVar.txt"
+  fwrite(dout1, sep='\t', row=F, quo=F, col=F, file=fout1)
+  fwrite(dout2, sep='\t', row=F, quo=F, col=F, file=fout2)
+  fwrite(dout3, sep='\t', row=F, quo=F, col=F, file=fout3)
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_RNA_QC2CALLSET_nsv29_IDTopVar.txt
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_PROTEIN_QC2CALLSET_nsv30_IDTopVar.txt
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_RNAEDITING_QC2CALLSET_nsv11_IDTopVar.txt
+#+END_SRC
+
+#+NAME: DONE|VE_BY_QTL_STUFF|subset_plink_for_eqtl
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: subset_plink_for_qtl 
+##
+## from https://www.cog-genomics.org/plink/1.9/data for recode usage (reworded slightly):
+##   
+## The 'A' modifier causes an additive (0/1/2) component file, suitable for loading from R, to be generated. 
+##  + By default, A1 alleles are counted; this can be customized with --recode-allele.
+##    In that case, --recode-allele's input file should have variant IDs in the first column and allele IDs in the second.
+##  + By default, the header line for .raw files only names the counted alleles. 
+##    To include the alternate allele codes as well, add the 'include-alt' modifier.
+## The 'A-transpose' modifier causes a variant-major additive component file to be generated. 
+##  + This can also be used with --recode-allele.
+##  + https://www.cog-genomics.org/plink/1.9/formats#traw (shows colnames)
+##
+
+# setup 
+  ml plink
+  EQR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_RNA_QC2CALLSET_nsv29_IDTopVar.txt
+  EQP=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_PROTEIN_QC2CALLSET_nsv30_IDTopVar.txt
+  EQD=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_RNAEDITING_QC2CALLSET_nsv11_IDTopVar.txt
+  ALL=/sc/arion/projects/psychgen/lbp/data/dna/wgs_forQTL/lbp_wgs_qc2callset.forQTL20OCT2022
+  ODR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022
+
+# run 
+  O1=${ODR}/RESULTS_UPDATED24OCT2022_RNA_QC2CALLSET_nsv29_IDTopVar
+  O2=${ODR}/RESULTS_UPDATED24OCT2022_PROTEIN_QC2CALLSET_nsv30_IDTopVar
+  O3=${ODR}/RESULTS_UPDATED24OCT2022_RNAEDITING_QC2CALLSET_nsv11_IDTopVar
+  plink --bfile ${ALL} --extract ${EQR} --recode A-transpose --out ${O1}
+  plink --bfile ${ALL} --extract ${EQP} --recode A-transpose --out ${O2}
+  plink --bfile ${ALL} --extract ${EQD} --recode A-transpose --out ${O3}
+
+##CODE BLOCK CONTENT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_RNA_QC2CALLSET_nsv29_IDTopVar.traw
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_PROTEIN_QC2CALLSET_nsv30_IDTopVar.traw
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/RESULTS_UPDATED24OCT2022_RNAEDITING_QC2CALLSET_nsv11_IDTopVar.traw
+#+END_SRC
+
+#+NAME: DONE|VE_BY_QTL_STUFF|EQTL_run_variancePartition
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: EQTL_run_variancePartition
+
+# setup 
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_vp_for_eqtl_UPDATED24OCT2022.r
+  ODR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/20OCT2022/VE
+
+# run
+  cd ${SDR}
+  let N=19799 #number of genes with non-missing IDTopVar in eqtl output
+  let STEP=9
+  let G1=1
+  let G2=G1+STEP
+  echo "" | tail -n+2 > rna_all
+  while [[ ${G2} -gt ${G1} ]]
+  do
+    echo ${G1} ${G2}
+    J=RNA_QC2CALLSET_nsv29_IDTopVarVE_${G1}_to_${G2}
+    O=${ODR}/${J}.RDS
+    mybsub psychgen ${J} 5000 0:10 premium 1 "Rscript ${RSCRIPT} ${G1} ${G2} ${O}"
+    let G1=G2+1
+    let G2=G1+STEP
+    if [[ ${G2} -gt ${N} ]]
+    then let G2=N
+    fi
+    echo ${J} >> rna_all
+  done
+
+# check 
+  cd ${SDR}
+  cat rna_all | sort | uniq > x;mv x rna_all
+  ls RNA*stdout | sed s/'.stdout'/''/g | sort | uniq > rna_sent
+  grep -m1 -l Success RNA*stdout | sed s/'.stdout'/''/g | sort | uniq > rna_success
+  comm -23 rna_all rna_sent | sort | uniq > rna_notsent
+  comm -23 rna_sent rna_success | sort | uniq > rna_fail
+  wc -l rna_all rna_sent rna_notsent rna_success rna_fail
+  #  1980 all
+  #  1980 sent
+  #     0 notsent
+  #  1980 success
+  #     0 fail
+
+# rerun fail (its the socket thing)
+  cd ${SDR}
+  for J in `cat rna_fail`
+  do 
+    G1=`echo ${J} | tr '_' ' ' | awk '{print $6}'`
+    G2=`echo ${J} | tr '_' ' ' | awk '{print $8}'`
+    O=${ODR}/${J}.RDS
+    mybsub psychgen ${J} 5000 0:30 premium 1 "Rscript ${RSCRIPT} ${G1} ${G2} ${O}"
+  done
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE/RNA*RDS
+#+END_SRC
+
+#+NAME: DONE|VE_BY_QTL_STUFF|PQTL_run_variancePartition
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: PQTL_run_variancePartition
+
+# setup 
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_vp_for_pqtl_UPDATED24OCT2022.r
+  ODR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/20OCT2022/VE
+
+# run
+  cd ${SDR}
+  let N=5128 #number of genes with non-missing IDTopVar in pqtl output
+  let STEP=9
+  let G1=1
+  let G2=G1+STEP
+  echo "" | tail -n+2 > pro_all
+  while [[ ${G2} -gt ${G1} ]]
+  do
+    echo ${G1} ${G2}
+    J=PROTEIN_QC2CALLSET_nsv30_IDTopVarVE_${G1}_to_${G2}
+    O=${ODR}/${J}.RDS
+    mybsub psychgen ${J} 5000 0:10 premium 1 "Rscript ${RSCRIPT} ${G1} ${G2} ${O}"
+    let G1=G2+1
+    let G2=G1+STEP
+    if [[ ${G2} -gt ${N} ]]
+    then let G2=N
+    fi
+    echo ${J} >> pro_all
+  done
+
+# check 
+  cd ${SDR}
+  cat pro_all | sort | uniq > x;mv x pro_all
+  ls PROTEIN*stdout | sed s/'.stdout'/''/g | sort | uniq > pro_sent
+  grep -m1 -l Success PROTEIN*stdout | sed s/'.stdout'/''/g | sort | uniq > pro_success
+  comm -23 pro_all pro_sent | sort | uniq > pro_notsent
+  comm -23 pro_sent pro_success | sort | uniq > pro_fail
+  wc -l pro_all pro_sent pro_notsent pro_success pro_fail
+  ##  513 pro_all
+  ##  513 pro_sent
+  ##    0 pro_notsent
+  ##  513 pro_success
+  ##    0 pro_fail
+
+# rerun fail (its the socket thing)
+  cd ${SDR}
+  for J in `cat pro_fail`
+  do 
+    G1=`echo ${J} | tr '_' ' ' | awk '{print $5}'`
+    G2=`echo ${J} | tr '_' ' ' | awk '{print $7}'`
+    O=${ODR}/${J}.RDS
+    mybsub psychgen ${J} 5000 0:30 premium 1 "Rscript ${RSCRIPT} ${G1} ${G2} ${O}"
+  done
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE/PROTEIN*RDS
+#+END_SRC
+
+#+NAME: DONE|VE_BY_QTL_STUFF|EDITQTL_run_variancePartition
+#+BEGIN_SRC shell
+##CODE BLOCK CONTENT: EDITQTL_run_variancePartition
+
+# setup 
+  ml R/4.0.3
+  RSCRIPT=/sc/arion/work/charna02/scripts/lbp/RUN_vp_for_editqtl_UPDATED24OCT2022.r
+  ODR=/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE
+  SDR=/sc/arion/projects/psychgen/lbp/scripts/runEQTL/20OCT2022/VE
+
+# run
+  cd ${SDR}
+  let N=50834 #number of genes with non-missing IDTopVar in pqtl output
+  let STEP=9
+  let G1=1
+  let G2=G1+STEP
+  echo "" | tail -n+2 > red_all
+  while [[ ${G2} -gt ${G1} ]]
+  do
+    echo ${G1} ${G2}
+    J=RNAEDITING_QC2CALLSET_nsv11_IDTopVarVE_${G1}_to_${G2}
+    O=${ODR}/${J}.RDS
+    mybsub psychgen ${J} 5000 0:10 premium 1 "Rscript ${RSCRIPT} ${G1} ${G2} ${O}"
+    let G1=G2+1
+    let G2=G1+STEP
+    if [[ ${G2} -gt ${N} ]]
+    then let G2=N
+    fi
+    echo ${J} >> red_all
+  done
+
+# check 
+  cd ${SDR}
+  cat red_all | sort | uniq > x;mv x red_all
+  ls RNAEDIT*stdout | sed s/'.stdout'/''/g | sort | uniq > red_sent
+  grep -m1 -l Success RNAEDIT*stdout | sed s/'.stdout'/''/g | sort | uniq > red_success
+  comm -23 red_all red_sent | sort | uniq > red_notsent
+  comm -23 red_sent red_success | sort | uniq > red_fail
+  wc -l red_all red_sent red_notsent red_success red_fail
+  ##  5084 red_all
+  ##  5084 red_sent
+  ##     0 red_notsent
+  ##  5071 red_success
+  ##    13 red_fail
+
+# rerun fail (its the socket thing until last 13, which are error due to no variance)
+  cd ${SDR}
+  for J in `cat red_fail`
+  do 
+    G1=`echo ${J} | tr '_' ' ' | awk '{print $5}'`
+    G2=`echo ${J} | tr '_' ' ' | awk '{print $7}'`
+    O=${ODR}/${J}.RDS
+    mybsub psychgen ${J} 5000 0:30 premium 1 "Rscript ${RSCRIPT} ${G1} ${G2} ${O}"
+  done
+
+##CODE BLOCK OUTPUT: 
+##/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE/RNAEDIT*RDS
+#+END_SRC
+
+#+NAME: WIP|VE_BY_QTL_STUFF|analyses
+#+BEGIN_SRC R
+##CODE BLOCK CONTENT: initial variance explained analyses
+
+# setup 
+  library(data.table)
+  library(ggplot2)
+  library(ggthemes)
+  library(patchwork)
+  library(corrplot)
+  setwd("/sc/arion/projects/psychgen/lbp/results/runEQTL/20OCT2022/VE")
+  rnalist <- Sys.glob("RNA_*.RDS")
+  prolist <- Sys.glob("PRO*.RDS")
+  redlist <- Sys.glob("RNAEDIT*.RDS")
+
+# RNA - read in and combine
+  rnares <- c()
+  for (i in rnalist){
+      add <- readRDS(i)
+      rnares <- rbind(rnares, add)
+  }
+  egn <- rnares[eqtl_storey<0.05]$gene
+  rnares[,eqtl_livpm:="NONE"]
+  rnares[gene %in% egn, eqtl_livpm:="LIVPM"]
+
+# PROTEIN - read in and combine
+  prores <- c()
+  for (i in prolist){
+      add <- readRDS(i)
+      prores <- rbind(prores, add)
+  }
+  egn <- prores[eqtl_storey<0.05]$gene
+  prores[,eqtl_livpm:="NONE"]
+  prores[gene %in% egn, eqtl_livpm:="LIVPM"]
+
+# RNAEDITING - read in and combine
+  redres <- c()
+  for (i in redlist){
+      add <- readRDS(i)
+      redres <- rbind(redres, add)
+  }
+  egn <- redres[eqtl_storey<0.05]$gene
+  redres[,eqtl_livpm:="NONE"]
+  redres[gene %in% egn, eqtl_livpm:="LIVPM"]
+  redres[,livpmDE_DEG:="NONE"]
+  redres[livpmDE_padj<0.05,livpmDE_DEG:="LIVPM"]
+
+# deciles 
+  rnares <- rnares[order(eqtl_ve)]
+  rnares[,eqtl_ve_decile:= floor(1 + 10 * (.I-1) / .N)]
+  prores <- prores[order(eqtl_ve)]
+  prores[,eqtl_ve_decile:= floor(1 + 10 * (.I-1) / .N)]
+  rnares[,eqtl_ve_decile:=factor(eqtl_ve_decile, ordered=T, levels=1:10)]
+  prores[,eqtl_ve_decile:=factor(eqtl_ve_decile, ordered=T, levels=1:10)]
+  rnares <- rnares[order(livpm_ve)]
+  rnares[,livpm_ve_decile:= floor(1 + 10 * (.I-1) / .N)]
+  prores <- prores[order(livpm_ve)]
+  prores[,livpm_ve_decile:= floor(1 + 10 * (.I-1) / .N)]
+  rnares[,livpm_ve_decile:=factor(livpm_ve_decile, ordered=T, levels=1:10)]
+  prores[,livpm_ve_decile:=factor(livpm_ve_decile, ordered=T, levels=1:10)]
+
+# save
+  saveRDS(list("rna"=rnares, "protein"=prores, "rnaediting"=redres), file="QTL_VE_RESULTS_25OCT2022.RDS")
+
+# QUESTION1: are RNA egenes depleted for RNA livpm degs? yes
+  qt1 <- unique(rnares[,.(gene, eqtl_livpm, livpmDE_DEG, eqtl_ve)])
+  qt1[,isQtl:=FALSE]
+  qt1[,isQtlVE10PCT:=FALSE]
+  qt1[eqtl_livpm=="LIVPM",isQtl:=TRUE]
+  qt1[eqtl_livpm=="LIVPM" & eqtl_ve>=0.1,isQtlVE10PCT:=TRUE]
+  qt1[,isDeg:=FALSE]
+  qt1[livpmDE_DEG!="NONE",isDeg:=TRUE]
+  qt1[,isNotDeg:=FALSE]
+  qt1[livpmDE_DEG=="NONE",isNotDeg:=TRUE]
+  qt1[,isLivDeg:=FALSE]
+  qt1[livpmDE_DEG=="LIV",isLivDeg:=TRUE]
+  qt1[,isPmDeg:=FALSE]
+  qt1[livpmDE_DEG=="PM",isPmDeg:=TRUE]
+  qt1[,isQtl:=factor(isQtl, levels=c("TRUE", "FALSE"))]
+  qt1[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+  qt1[,isNotDeg:=factor(isNotDeg, levels=c("TRUE", "FALSE"))]
+  qt1[,isLivDeg:=factor(isLivDeg, levels=c("TRUE", "FALSE"))]
+  qt1[,isPmDeg:=factor(isPmDeg, levels=c("TRUE", "FALSE"))]
+  qt1[,isQtlVE10PCT:=factor(isQtlVE10PCT, levels=c("TRUE", "FALSE"))]
+  #
+  # overall depletion of egenes in livpm deg
+  #
+  fisher.test(table(qt1$isQtl, qt1$isDeg)) #p=5.671e-06, or=0.8497246
+  fisher.test(table(qt1$isQtlVE10PCT, qt1$isDeg)) #p<2.2e-16,or=0.4480574
+  #
+  # opposite effect for liv deg and pm deg
+  #
+  fisher.test(table(qt1$isQtl, qt1$isLivDeg)) #p=1.49e-06, or=1.152263
+  fisher.test(table(qt1$isQtl, qt1$isPmDeg)) #p-value < 2.2e-16, or=0.7655323
+  
+# QUESTION2: are protein egenes depleted for protein livpm degs? 
+  qt2 <- unique(prores[,.(gene, eqtl_livpm, livpmDE_DEG, eqtl_ve)])
+  qt2[,isQtl:=FALSE]
+  qt2[,isQtlVE10PCT:=FALSE]
+  qt2[eqtl_livpm=="LIVPM",isQtl:=TRUE]
+  qt2[eqtl_livpm=="LIVPM" & eqtl_ve>=0.1,isQtlVE10PCT:=TRUE]
+  qt2[,isDeg:=FALSE]
+  qt2[livpmDE_DEG!="NONE",isDeg:=TRUE]
+  qt2[,isNotDeg:=FALSE]
+  qt2[livpmDE_DEG=="NONE",isNotDeg:=TRUE]
+  qt2[,isLivDeg:=FALSE]
+  qt2[livpmDE_DEG=="LIV",isLivDeg:=TRUE]
+  qt2[,isPmDeg:=FALSE]
+  qt2[livpmDE_DEG=="PM",isPmDeg:=TRUE]
+  qt2[,isQtl:=factor(isQtl, levels=c("TRUE", "FALSE"))]
+  qt2[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+  qt2[,isNotDeg:=factor(isNotDeg, levels=c("TRUE", "FALSE"))]
+  qt2[,isLivDeg:=factor(isLivDeg, levels=c("TRUE", "FALSE"))]
+  qt2[,isPmDeg:=factor(isPmDeg, levels=c("TRUE", "FALSE"))]
+  qt2[,isQtlVE10PCT:=factor(isQtlVE10PCT, levels=c("TRUE", "FALSE"))]
+  #
+  # overall depletion of egenes in livpm deg
+  #
+  fisher.test(table(qt2$isQtl, qt2$isDeg)) #p-value = 0.006965, or=0.7821691
+  fisher.test(table(qt2$isQtlVE10PCT, qt2$isDeg)) #p-value = 0.0001559, or=0.5197385
+  #
+  # opposite effect for liv deg and pm deg? not seen here
+  #
+  fisher.test(table(qt2$isQtl, qt2$isLivDeg)) #p=0.003795, or=0.7410451
+  fisher.test(table(qt2$isQtl, qt2$isPmDeg)) #p=1, or=0.9972896
+  cor.test( rnares[eqtl_livpm=="LIVPM"]$eqtl_ve, rnares[eqtl_livpm=="LIVPM"]$livpm_ve, method="spearman")
+  cor.test( rnares$eqtl_ve, rnares$livpm_ve, method="spearman")
+
+# QUESTION3: are rnaediting egenes depleted for rnaediting livpm degs? 
+  qt3 <- unique(redres[,.(gene, eqtl_livpm, livpmDE_DEG, eqtl_ve)])
+  qt3[,isQtl:=FALSE]
+  qt3[,isQtlVE10PCT:=FALSE]
+  qt3[eqtl_livpm=="LIVPM",isQtl:=TRUE]
+  qt3[eqtl_livpm=="LIVPM" & eqtl_ve>=0.1,isQtlVE10PCT:=TRUE]
+  qt3[,isDeg:=FALSE]
+  qt3[livpmDE_DEG!="NONE",isDeg:=TRUE]
+  qt3[,isNotDeg:=FALSE]
+  qt3[livpmDE_DEG=="NONE",isNotDeg:=TRUE]
+  qt3[,isLivDeg:=FALSE]
+  qt3[livpmDE_DEG=="LIV",isLivDeg:=TRUE]
+  qt3[,isPmDeg:=FALSE]
+  qt3[livpmDE_DEG=="PM",isPmDeg:=TRUE]
+  qt3[,isQtl:=factor(isQtl, levels=c("TRUE", "FALSE"))]
+  qt3[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+  qt3[,isNotDeg:=factor(isNotDeg, levels=c("TRUE", "FALSE"))]
+  qt3[,isLivDeg:=factor(isLivDeg, levels=c("TRUE", "FALSE"))]
+  qt3[,isPmDeg:=factor(isPmDeg, levels=c("TRUE", "FALSE"))]
+  qt3[,isQtlVE10PCT:=factor(isQtlVE10PCT, levels=c("TRUE", "FALSE"))]
+  #
+  # overall depletion of rnaediting egenes in rnaediting livpm deg
+  #
+  fisher.test(table(qt3$isQtl, qt3$isDeg)) #p-value < 2.2e-16, or=0.3022349
+  fisher.test(table(qt3$isQtlVE10PCT, qt3$isDeg)) #p-value < 2.2e-16, or=0.1517519
+
+# enrichment by VE bucket
+  dt1 <- unique(rnares[,.(gene, eqtl_livpm, livpmDE_DEG, eqtl_ve)])
+  dt2 <- unique(prores[,.(gene, eqtl_livpm, livpmDE_DEG, eqtl_ve)])
+  dt1[,isDeg:=FALSE]
+  dt2[,isDeg:=FALSE]
+  dt1[livpmDE_DEG!="NONE",isDeg:=TRUE]
+  dt2[livpmDE_DEG!="NONE",isDeg:=TRUE]
+  dt1[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+  dt2[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+  start <- 0
+  step <- 0.05
+  end <- start + step
+  while (start < 1){
+      cur1 <- copy(dt1) 
+      cur2 <- copy(dt2) 
+      cur1[,isQtl:=FALSE]
+      cur2[,isQtl:=FALSE]
+      cur1[eqtl_livpm=="LIVPM" & eqtl_ve>=start & eqtl_ve<end, isQtl:=TRUE]
+      cur2[eqtl_livpm=="LIVPM" & eqtl_ve>=start & eqtl_ve<end, isQtl:=TRUE]
+      cur1[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+      cur2[,isDeg:=factor(isDeg, levels=c("TRUE", "FALSE"))]
+      ft1 <- fisher.test(table(dt1$isQtl, dt1$isDeg)) 
+      ft2 <- fisher.test(table(dt2$isQtl, dt2$isDeg)) 
+      rge <- paste0(start, "-", end)
+      ad1 <- data.table(ome="rna", lo=start, hi=end, bin=rge, or=ft1$estimate, p=ft1$p.value)
+      ad2 <- data.table(ome="protein", lo=start, hi=end, bin=rge, or=ft2$estimate, p=ft2$p.value)
+      start <- end
+      end <- start + step
+  }   
+
+# plots
+  pdf("~/www/figures/lbp/tmp.pdf")
+      p1 <- ggplot(rnares, aes(eqtl_ve, livpm_ve)) + geom_point() + theme_base()
+      p2 <- ggplot(rnares, aes(eqtl_ve_decile, livpm_ve)) + geom_jitter(pch=21, size=2, alpha=0.5) + theme_bw()        
+      p3 <- ggplot(rnares, aes(eqtl_livpm, livpm_ve)) + geom_jitter(pch=21, size=2, alpha=0.5) + theme_bw()        
+      p4 <- ggplot(rnares[eqtl_livpm=="LIVPM"], aes(eqtl_ve, livpm_ve)) + geom_point() + theme_base()
+      show(p4)
+  dev.off()
+
+#+END_SRC
