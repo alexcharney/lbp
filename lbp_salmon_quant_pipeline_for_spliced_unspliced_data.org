@@ -1,0 +1,590 @@
+
+* STEP 1: create a custom reference transcriptome (the salmon index, or SIDX, file)
+
+#+NAME: DONE|create_custom_reference
+#+BEGIN_SRC R
+## CODE BLOCK LANGUAGE: R
+## CODE BLOCK PURPOSE: create a custom reference transcriptome FASTA
+
+# setup 
+  rm(list=ls())
+  library(Biostrings)
+  library(BSgenome)
+  library(eisaR)
+  library(GenomicFeatures)
+  library(SummarizedExperiment)
+  library(tximeta)
+  library(rjson)
+  library(reticulate)
+  library(SingleCellExperiment)
+  library(scater)
+  setwd("/sc/arion/projects/psychgen/lbp/resources/ref_for_salmon_splicing_protocol")
+
+# define paths we will use
+  url1 <- "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_41/GRCh38.primary_assembly.genome.fa.gz"
+  url2 <- "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_41/gencode.v41.annotation.gtf.gz"
+  cwd <- "/sc/arion/projects/psychgen/lbp/resources/ref_for_salmon_splicing_protocol"
+  fasta_path <- paste0(cwd, "/GRCh38.primary_assembly.genome.fa")
+  gtf_path <- paste0(cwd, "/gencode.v41.annotation.gtf")
+  fasta_path_expanded <- paste0(cwd, "/GRCh38.primary_assembly.genome.expanded.fa")
+  gtf_expanded <- paste0(cwd, "/gencode.v41.annotation.expanded.gtf")
+  gtf_expanded_tsv <- paste0(cwd, "/gencode.v41.annotation.expanded.features.tsv")
+  gtf_expanded_tsv_tx_gene <- paste0(cwd, "/gencode.v41.annotation.expanded.tx2gene.tsv")
+
+# get reference gtf and fasta from internet
+  system(paste('wget -P', cwd, url1))
+  system(paste('wget -P', cwd, url2))
+  system('gunzip ./GRCh38.primary_assembly.genome.fa.gz')
+  system('gunzip ./gencode.v41.annotation.gtf.gz')
+
+# extract (then save) genomic ranges from gtf for spliced transcripts and unspliced transcripts
+  grl <- eisaR::getFeatureRanges(gtf_path, featureType = c("spliced", "unspliced"),                                               
+                                      flankLength = 90L, 
+                                      joinOverlappingIntrons = FALSE, 
+                                      verbose = TRUE)
+  eisaR::exportToGtf(grl, filepath = gtf_expanded) ##save new gtf (note: this file is never actually used again, but its useful to see)
+  write.table(metadata(grl)$corrgene, file = gtf_expanded_tsv,
+              row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t") ##save list of gene names
+
+# read in and format genomic sequences
+  genome <- Biostrings::readDNAStringSet(fasta_path)
+  names(genome) <- sapply(strsplit(names(genome), " "), .subset, 1)
+
+# pull (then save) the sequences for spliced transcripts and unspliced transcripts
+  seqs <- GenomicFeatures::extractTranscriptSeqs(x = genome, transcripts = grl)
+  Biostrings::writeXStringSet(seqs, filepath = fasta_path_expanded)
+
+# save file linking transcripts to genes
+  eisaR::getTx2Gene(grl, filepath = gtf_expanded_tsv_tx_gene)
+
+# some counts
+  length(metadata(grl)$featurelist$spliced   #[1] 251236 ... spliced transcript IDs
+  length(metadata(grl)$featurelist$unspliced #[1] 251236 ... unspliced transcript IDs
+  dim(metadata(grl)$corrtx) #[1] 251236      2
+  dim(metadata(grl)$corrgene) #[1] 61852     2
+  colnames(metadata(grl)$corrtx) #[1] "spliced"   "unspliced"
+  colnames(metadata(grl)$corrgene) #[1] "spliced"   "unspliced"
+
+# what will be in the new FASTA we generated?
+  length(seqs) #[1] 502472 ... divided by 2 = 251236 (one sequence for the spliced and unspliced form of each transcript)
+  system("fgrep ENST GRCh38.primary_assembly.genome.expanded.fa | wc -l") #502472
+
+# what will be in the gtf from the grl object?
+  n1 <- 61852*2 #number of genes, and one row for spliced and unspliced for each gene
+  n2 <- 251236*2 #number of transcripts, and one row for spliced and unspliced for each transcript
+  n3 <- nrow(grl@unlistData@elementMetadata) #number of exon entries (will be 1 for each unspliced transcript and >=1 for each spliced)
+  n1+ n2 + n3 #[1] 2502733 ... plus 3 header rows -> we expect 2502736 rows in the corresponding gtf
+  system("wc -l gencode.v41.annotation.expanded.gtf") #2502736 ... ok, good
+
+#+END_SRC
+#+BEGIN_SRC shell
+## CODE BLOCK LANGUAGE: shell
+## CODE BLOCK PURPOSE: create a custom reference transcriptome SIDX
+
+# setup 
+  ml salmon
+  cd /sc/arion/projects/psychgen/lbp/resources/ref_for_salmon_splicing_protocol
+
+# make file with chr names
+  grep ">" GRCh38.primary_assembly.genome.fa | cut -d ">" -f 2 | cut -d " " -f 1 > GRCh38.primary_assembly.genome.chrnames.txt
+
+# make sidx file
+  salmon index \
+	 -t <(cat GRCh38.primary_assembly.genome.expanded.fa GRCh38.primary_assembly.genome.fa) \
+	 -i gencode.v41.annotation.expanded.sidx \
+	 --gencode \
+	 -p 32 \
+	 -d GRCh38.primary_assembly.genome.chrnames.txt
+
+# is the "expanded" gtf really expanded? no, its a misnomer:
+  wc -l *gtf
+  ## 2502736 gencode.v41.annotation.expanded.gtf
+  ## 3375764 gencode.v41.annotation.gtf
+
+#+END_SRC
+
+
+* STEP 2: run salmon quant on the LBP data using the customized SIDX file
+
+#+NAME: DONE|make_commands_for_salmon
+#+BEGIN_SRC python
+## CODE BLOCK LANGUAGE: Python
+## CODE BLOCK PURPOSE: create commands for running salmon on each LBP sample
+
+##
+## NOTE FROM AWC: 
+##
+## This is a copy/paste of Deepak's code here, I never re-ran this. This code also 
+##   does not actually run salmon, it just builds the list of commands which then 
+##   need to be run in shell on minerva. 
+##
+## Note, initially Deepak ran this code giving "A" as the argument to 
+##   the "-libType" parameter of salmon. This makes salmon
+##   guess the library preparation technique used. I found (by inspecting the logs)
+##   that this led to an incorrect guess for ~25 samples (the correct libType 
+##   is "ISR") so Deepak reran salmon for those ~25 using ISR as the argument. 
+##   The code below has ISR as the argument, since this is what should be used.
+##
+## The quant files these commands produce are the foundation of all subsequent 
+##   steps (ie, they are the primary RNA and mature RNA expression data).
+##
+## The sidx file used here is the only data input to salmon besides the LBP fastqs, and
+##   steps for making this file are in "STEP 1" above. 
+##
+
+import os
+import pandas as pd
+import numpy as np
+import glob
+
+PATH_RNA = '/sc/arion/projects/psychgen/lbp/files/m1TableForLiharska2021_updated30JUNE2021.tsv'
+
+rna_paths = pd.read_table(PATH_RNA)
+
+rna_paths = rna_paths[rna_paths.columns[-2]].values
+
+for rna_path in rna_paths:
+    rones = [i for i in glob.glob(rna_path + '/*fastq*') if 'R1' in i]
+    rtwos = [i for i in glob.glob(rna_path + '/*fastq*') if 'R2' in i]
+    rones = sorted(rones)
+    rtwoes = sorted(rtwos)
+    rones_joined = ' '.join(rones)
+    rtwoes_joined = ' '.join(rtwoes)
+    sample = rna_path.split('/')[-1]
+    string = 'mybsub psychgen /sc/arion/projects/psychgen/lbp/scratch/velocity/sdr/index_{0} 8000 3:00 premium 8 \"/hpc/users/kajid02/salmon/salmon-1.9.0_linux_x86_64/bin/salmon quant -i /sc/arion/projects/psychgen/lbp/scratch/velocity/reference_genomes/gencode.v41.annotation.expanded.sidx -l ISR -1 {1} -2 {2} -p 8 --validateMappings -o /sc/arion/projects/psychgen/lbp/scratch/velocity/odr/transcripts_quant_{0}\"'.format(sample, rones_joined, rtwoes_joined, sample)
+    os.system(string)
+
+#+END_SRC
+
+
+* STEP 3: assemble the data output by salmon
+
+#+NAME: DONE|assemble_tpm_data
+#+BEGIN_SRC R
+## CODE BLOCK LANGUAGE: R
+## CODE BLOCK PURPOSE: collate the data from salmon for all samples
+##
+## Note, there is also code here that collates kallisto and rsem data
+##   generated elsewhere which we never use again, but I am leaving it
+##   so this code is consistent with how this code appears in other files.
+##
+
+# setup 
+  rm(list=ls())
+  library(data.table)
+  setwd("/sc/arion/projects/psychgen/lbp")
+
+# m1 table
+  m1 <- fread("./files/m1TableForLiharska2021_updated30JUNE2021.tsv")
+
+# gene to transcript map 
+  map <- fread("./resources/gencode.v30.primary_assembly.annotation.gene_id_to_transcript_id.txt", header=F, col.names=c("gene", "transcript"))
+
+# Check which samples have rsem and kallisto output
+  doesExist <- c()
+  for (i in 1:nrow(m1)){
+      curDir <- m1[i]$fqDirForLEL2021
+      curSid <- m1[i]$SAMPLE_NAME
+      rsmPth <- paste0(curDir, "/RAPiD/rsem/", curSid, ".isoforms.results")
+      kalPth <- paste0(curDir, "/RAPiD/kallisto/abundance.tsv")
+      add <- data.table( sid = curSid, rsem = file.exists(rsmPth), kallisto = file.exists(kalPth) )
+      doesExist <- rbind(doesExist, add)
+  }
+  doesExist <- doesExist[rsem==TRUE & kallisto==TRUE]
+  for (i in 1:nrow(doesExist)){
+      print(i)
+      curSid <- doesExist[i]$sid
+      curDir <- m1[SAMPLE_NAME==curSid]$fqDirForLEL2021
+      rsmPth <- paste0(curDir, "/RAPiD/rsem/", curSid, ".isoforms.results")
+      kalPth <- paste0(curDir, "/RAPiD/kallisto/abundance.tsv")
+      rsmDat <- fread(rsmPth)
+      rsmDat <- rsmDat[,.(gene=gene_id, transcript=transcript_id, tpm=TPM)]
+      kalDat <- fread(kalPth)
+      kalDat[ , gene:=tstrsplit(target_id, split="|", fixed=TRUE, keep=2L)]
+      kalDat[ , transcript:=tstrsplit(target_id, split="|", fixed=TRUE, keep=1L)]
+      kalDat <- kalDat[, c("gene", "transcript", "tpm"), with=F]
+      rsmDat[ , gene:=tstrsplit(gene, split=".", fixed=TRUE, keep=1L)]
+      kalDat[ , gene:=tstrsplit(gene, split=".", fixed=TRUE, keep=1L)]
+      rsmDat[ , transcript:=tstrsplit(transcript, split=".", fixed=TRUE, keep=1L)]
+      kalDat[ , transcript:=tstrsplit(transcript, split=".", fixed=TRUE, keep=1L)]
+      rsmDat[,gid:=paste(gene, transcript, sep="_")]
+      kalDat[,gid:=paste(gene, transcript, sep="_")]
+      if (i==1){
+          rsmMtx <- matrix(0, nrow=nrow(rsmDat), ncol=nrow(doesExist))
+          kalMtx <- matrix(0, nrow=nrow(kalDat), ncol=nrow(doesExist))
+          colnames(rsmMtx) <- colnames(kalMtx) <- doesExist$sid
+          rownames(rsmMtx) <- rsmDat$gid
+          rownames(kalMtx) <- kalDat$gid
+          rsmMtx[rsmDat$gid,curSid] <- rsmDat$tpm
+          kalMtx[kalDat$gid,curSid] <- kalDat$tpm
+      }
+      rsmMtx[rsmDat$gid,curSid] <- rsmDat$tpm
+      kalMtx[kalDat$gid,curSid] <- kalDat$tpm
+  }
+
+# add salmon (brain only for now - blood needs to be rerun using ISR strandedness setting - brain was rerun 01DEC2022)
+  fileList <- Sys.glob("/sc/arion/projects/psychgen/lbp/scratch/velocity/odr/*/quant.sf")
+  fileList <- grep("BRAIN", fileList, value=T)
+  salMtx <- matrix(0, nrow=467353, ncol=length(fileList)) 
+  rownames(salMtx) <- fread(fileList[1])$Name
+  colnames(salMtx) <- gsub("transcripts_quant_", "", basename(dirname(fileList)))
+  count <- 1
+  for (i in fileList){
+      print(count)
+      count <- count+1
+      curDat <- fread(i)
+      curNam <- gsub("transcripts_quant_", "", basename(dirname(i)))
+      curMtx <- as.data.frame(curDat[,.(TPM)])
+      rownames(curMtx) <- curDat$Name
+      curMtx <- curMtx[rownames(salMtx),,drop=F]
+      if (identical(rownames(curMtx), rownames(salMtx))) salMtx[,curNam] <- curMtx$TPM
+  }
+  colnames(salMtx) <- unlist(tstrsplit(colnames(salMtx), split="_", keep=1L))
+  unsGenes <- grep("-U", rownames(salMtx), value=T)  
+  splGenes <- grep("-U", rownames(salMtx), value=T, invert=T)
+  length(splGenes) #[1] 250381
+  length(unsGenes) #[1] 216972
+  salMsp <- salMtx[splGenes,]
+  salMun <- salMtx[unsGenes,]
+  rownames(salMun) <- gsub("-U", "", rownames(salMun))
+
+# save
+  fout <- "./data/RAW/rna/bulk/fromSema4/CompiledData/kallisto_rsem_salmon_tpm.RDS"
+  saveRDS(list("rsem"=rsmMtxm, "kallisto"=kalMtx, "salmon"=list("spliced"=salMsp, "unspliced"=salMun)), file=fout)
+
+#+END_SRC
+
+
+* STEP 4: normalize and adjust the data from salmon
+
+#+NAME: DONE|normalization_adjustment_of_spliced_unspliced_counts
+#+BEGIN_SRC R
+## CODE BLOCK LANGUAGE: R
+## CODE BLOCK PURPOSE: voom-normalize and regress out technical covariates
+
+# setup 
+  rm(list=ls())
+  library(data.table) 
+  library(ggplot2)
+  library(ggthemes)
+  library(patchwork)
+  library(tximportData)
+  library(tximport)
+  library(BiocParallel)
+  library(edgeR)
+  library(variancePartition)
+  Sys.setenv(OMP_NUM_THREADS = 20)
+  setwd("/sc/arion/projects/psychgen/lbp")
+  tx2genefile <- fread("./resources/ref_for_salmon_splicing_protocol/gencode.v41.annotation.expanded.tx2gene.tsv", header=F, col.names=c("transcript", "gene"))
+
+# samples to keep
+  rna <- readRDS("/sc/arion/work/charna02/symlinks/lbp/liharska2021/final.everything.RDS")
+  met <- rna$covariates
+  met[mymet_bank=="Miami", IID_ISMMS:=gsub("_", "-", IID_ISMMS)]
+  fileList <- data.table(path=Sys.glob("/sc/arion/projects/psychgen/lbp/scratch/velocity/odr/*/quant.sf"))
+  fileList[,sid:=basename(dirname(path))]
+  fileList <- fileList[grep("LBPSEMA4", sid)]
+  fileList[,sid:=gsub("transcripts_quant_", "", sid)]
+  fileList[,sid:=tstrsplit(sid, split="_", keep=1L)]
+  fileList <- fileList[sid %in% met$SAMPLE_ISMMS]
+
+# run tximport 
+  salmon_files <- fileList$path
+  names(salmon_files) <- fileList$sid 
+  summarized <- tximport(salmon_files, type=c('salmon'), countsFromAbundance = c("lengthScaledTPM"), tx2gene=tx2genefile)
+  spliced <- summarized$counts[!grepl('-U', rownames(summarized$counts)),]
+  unspliced <- summarized$counts[grepl('-U', rownames(summarized$counts)),]
+  rownames(spliced) <- unlist( tstrsplit( rownames(spliced), split=".", fixed=T, keep=1L ) ) 
+  rownames(unspliced) <- unlist( tstrsplit( rownames(unspliced), split=".", fixed=T, keep=1L ) ) 
+  dim(spliced) #[1] 61436   518
+  dim(unspliced) #[1] 38387   518
+  length(intersect(colnames(spliced), colnames(unspliced))) #[1] 518
+  length(intersect(rownames(spliced), rownames(unspliced))) #[1] 38344
+
+# define expressed genes from tpm data
+  #
+  # compiled tpm data
+  #
+  sal <- readRDS("./data/RAW/rna/bulk/fromSema4/CompiledData/kallisto_rsem_salmon_tpm.RDS")$salmon
+  salMsp <- sal$spliced
+  salMun <- sal$unspliced
+  dim(salMsp) #[1] 250381    534
+  dim(salMun) #[1] 216972    534
+  #
+  # verify all transcripts map to a gene id
+  #
+  salTid <- data.table(transcript=unique(c(rownames(salMsp), rownames(salMun))))
+  nrow(salTid) #[1] 250559
+  salTid <- merge(salTid, tx2genefile) 
+  nrow(salTid) #[1] 250559
+  #
+  # subset for samples in main rna analysis
+  #
+  salMspTid <- as.data.frame(salTid[transcript %in% rownames(salMsp)])
+  salMunTid <- as.data.frame(salTid[transcript %in% rownames(salMun)])
+  rownames(salMspTid) <- salMspTid$transcript
+  rownames(salMunTid) <- salMunTid$transcript
+  salMspTid <- salMspTid[rownames(salMsp),]
+  salMunTid <- salMunTid[rownames(salMun),]
+  salMsp <- salMsp[,intersect(colnames(rna$featureCounts), colnames(salMsp))] #subset for inds in lel
+  salMun <- salMun[,intersect(colnames(rna$featureCounts), colnames(salMun))]
+  dim(salMsp) #[1] 250381    518
+  dim(salMun) #[1] 216972    518
+  dim(salMspTid) #[1] 250381      2
+  dim(salMunTid) #[1] 216972      2
+  #
+  # sum transcript TPMs to gene level TPMs
+  #
+  identical(rownames(salMspTid), rownames(salMsp)) #[1] TRUE
+  identical(rownames(salMunTid), rownames(salMun)) #[1] TRUE
+  rownames(salMsp) <- salMspTid$gene
+  rownames(salMun) <- salMunTid$gene
+  salMsp <- rowsum(salMsp, row.names(salMsp))
+  salMun <- rowsum(salMun, row.names(salMun))
+  dim(salMsp) #[1] 61436   518
+  dim(salMun) #[1] 38387   518  
+  #
+  # define expressed vs unexpressed genes
+  #
+  hist(log(rowMeans(salMsp)), breaks=100) # to find cutoff to define lowly expressed
+  hist(log(rowMeans(salMun)), breaks=100) # to find cutoff to define lowly expressed
+  isexprSalMsp <- log(rowMeans(salMsp)) > -5
+  isexprSalMun <- log(rowMeans(salMun)) > -5
+  sum(isexprSalMsp) #[1] 30099
+  sum(isexprSalMun) #[1] 22955
+  length( intersect(names(which(isexprSalMsp)), names(which(isexprSalMun))) ) #[1] 20671
+  isexprSalmon <- intersect(names(which(isexprSalMsp)), names(which(isexprSalMun)))
+  length(isexprSalmon) #[1] 20671
+  salMsp <- salMsp[isexprSalMsp,]
+  salMun <- salMun[isexprSalMun,]
+  dim(salMsp) #[1] 30099    518
+  dim(salMun) #[1] 22955    518
+  rownames(salMsp) <- unlist( tstrsplit( rownames(salMsp), split=".", fixed=T, keep=1L ) ) 
+  rownames(salMun) <- unlist( tstrsplit( rownames(salMun), split=".", fixed=T, keep=1L ) ) 
+  spliced <- spliced[rownames(salMsp),]
+  unspliced <- unspliced[rownames(salMun),]
+  dim(spliced)   #[1] 30099    518
+  dim(unspliced) #[1] 22955    518
+
+# voom normalization 
+  mymet <- as.data.frame(met)
+  rownames(mymet) <- met$SAMPLE_ISMMS
+  identical(colnames(spliced), colnames(unspliced)) #[1] TRUE
+  mymet <- mymet[colnames(spliced),]
+  vobform <- ~(1|mymet_sex) + mymet_rin + neuronal + RNASeqMetrics_MEDIAN_3PRIME_BIAS + mymet_postmortem +
+      RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+      InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  rsdform <- ~(1|mymet_sex) + mymet_rin + neuronal + RNASeqMetrics_MEDIAN_3PRIME_BIAS +
+      RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+      InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  rsdfrm2 <- ~(1|mymet_sex) + mymet_rin + RNASeqMetrics_MEDIAN_3PRIME_BIAS +
+      RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+      InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  splGeneExpr <- DGEList( spliced )
+  unsGeneExpr <- DGEList( unspliced )
+  splGeneExpr <- calcNormFactors( splGeneExpr )
+  unsGeneExpr <- calcNormFactors( unsGeneExpr )
+  splVobjDream <- voomWithDreamWeights( splGeneExpr, vobform, mymet, BPPARAM = MulticoreParam(5))
+  unsVobjDream <- voomWithDreamWeights( unsGeneExpr, vobform, mymet, BPPARAM = MulticoreParam(5))
+  splVobjDreamFit <- dream(splVobjDream, rsdform, mymet, BPPARAM = MulticoreParam(5), computeResiduals = TRUE)
+  unsVobjDreamFit <- dream(unsVobjDream, rsdform, mymet, BPPARAM = MulticoreParam(5), computeResiduals = TRUE)
+  splVobjDreamFt2 <- dream(splVobjDream, rsdfrm2, mymet, BPPARAM = MulticoreParam(5), computeResiduals = TRUE)
+  unsVobjDreamFt2 <- dream(unsVobjDream, rsdfrm2, mymet, BPPARAM = MulticoreParam(5), computeResiduals = TRUE)
+  splRsd <- residuals(splVobjDreamFit)
+  unsRsd <- residuals(unsVobjDreamFit)
+  splRd2 <- residuals(splVobjDreamFt2)
+  unsRd2 <- residuals(unsVobjDreamFt2)
+
+# save
+  myout <- list( meta=mymet, 
+                spliced=list(vobject=splVobjDream, residuals=splRsd, residualsWithoutNeu=splRd2, tpm=salMsp, counts=spliced), 
+                unspliced=list(vobject=unsVobjDream, residuals=unsRsd, residualsWithoutNeu=unsRd2, tpm=salMun, counts=unspliced))
+  saveRDS(myout, file="./data/RAW/rna/bulk/fromSema4/CompiledData/salmon_spliced_unspliced_awc_01DEC2022.RDS")
+
+## if reading back in:
+#  myout <- readRDS("./data/RAW/rna/bulk/fromSema4/CompiledData/salmon_spliced_unspliced_awc_01DEC2022.RDS")
+#  mymet <- myout$meta
+#  splVobjDream <- myout$spliced$vobject
+#  unsVobjDream <- myout$unspliced$vobject
+
+#+END_SRC
+
+
+* STEP 5: run DE of LIV-PM status on primary RNA and mature RNA
+
+#+NAME: DONE|livpm_de_of_spliced_unspliced_counts
+#+BEGIN_SRC R
+## CODE BLOCK LANGUAGE: R
+## CODE BLOCK PURPOSE: run DE of LIV-PM status on the spliced and unspliced data
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  Sys.setenv(OMP_NUM_THREADS = 6)
+  setwd("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/CompiledData")
+
+# read in lbp spliced and unspliced counts
+  data <- readRDS("salmon_spliced_unspliced_awc_01DEC2022.RDS")
+  met <- as.data.table(data$meta)
+  spl <- data$spliced$vobject
+  uns <- data$unspliced$vobject
+
+# with contrast
+  form <- ~0 + dePhe + (1|mymet_sex) + mymet_rin + neuronal + RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  met[mymet_postmortem==1,dePhe:="PM"]
+  met[mymet_postmortem==0,dePhe:="LIV"]
+  met <- as.data.frame(met)
+  rownames(met) <- met$SAMPLE_ISMMS
+  identical(rownames(met), colnames(spl)) ##[1] TRUE
+  identical(rownames(met), colnames(uns)) ##[1] TRUE
+  spl_L <- getContrast(spl, form, met, c(paste0("dePhe","PM"), paste0("dePhe","LIV")))
+  uns_L <- getContrast(uns, form, met, c(paste0("dePhe","PM"), paste0("dePhe","LIV")))
+  splFit <- dream( spl, form, met, spl_L, BPPARAM = MulticoreParam(5))
+  unsFit <- dream( uns, form, met, uns_L, BPPARAM = MulticoreParam(5))
+  splDe <- topTable(splFit, "L1", number=nrow(spl))
+  unsDe <- topTable(unsFit, "L1", number=nrow(uns))
+  splDe <- data.table(gene = rownames(splDe), splDe)
+  unsDe <- data.table(gene = rownames(unsDe), unsDe)
+  splDe[,de.status := "Not DE"]
+  unsDe[,de.status := "Not DE"]
+  splDe[adj.P.Val < 0.05 & logFC > 0 , de.status:="Postmortem"]
+  unsDe[adj.P.Val < 0.05 & logFC > 0 , de.status:="Postmortem"]
+  splDe[adj.P.Val < 0.05 & logFC < 0 , de.status:="Living"]
+  unsDe[adj.P.Val < 0.05 & logFC < 0 , de.status:="Living"]
+  splDe[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+  unsDe[,gene:=tstrsplit(gene, split=".", fixed=T, keep=1)]
+  table(splDe$de.status)
+  ##
+  ##  Living     Not DE Postmortem 
+  ##   13313       8969       7817 
+  ##
+  table(unsDe$de.status)
+  ##
+  ##  Living     Not DE Postmortem
+  ##    8892       5961       8102
+  ##
+
+# save 
+  data$livpmDE <- list("spliced"=splDe, "unspliced"=unsDe)
+  saveRDS(data, file="salmon_spliced_unspliced_awc_01DEC2022.RDS")
+
+#+END_SRC
+
+
+* STEP 6: run DE of the interaction between spliced status and LIV-PM status
+
+#+NAME: DONE|livpm_spliced_interaction_de
+#+BEGIN_SRC R
+## CODE BLOCK LANGUAGE: R
+## CODE BLOCK PURPOSE: run DE of the interaction between spliced status and LIV-PM status 
+##                     (ie, the percent RNA spliced per gene)
+##
+##
+## Note, here we use the intersect of expressed genes. Could also use the union - Ryan and I agreed 
+##   that neither approach is wrong. 
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(patchwork))
+  Sys.setenv(OMP_NUM_THREADS = 20)
+  setwd("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/CompiledData")
+
+# read in lbp spliced and unspliced counts
+  data <- readRDS("salmon_spliced_unspliced_awc_01DEC2022.RDS")
+  met <- as.data.table(data$meta)
+  met[mymet_postmortem==1,dePhe:="PM"]
+  met[mymet_postmortem==0,dePhe:="LIV"]
+  met <- as.data.frame(met)
+  rownames(met) <- met$SAMPLE_ISMMS
+  spl <- data$spliced$counts
+  uns <- data$unspliced$counts
+  dim(spl) ##[1] 30099   518
+  dim(uns) ##[1] 22955   518
+
+# gene intersect - subset lbp spliced and unspliced counts for shared genes
+  spl <- spl[intersect(rownames(spl), rownames(uns)),]
+  uns <- uns[intersect(rownames(spl), rownames(uns)),]
+  identical(rownames(spl), rownames(uns)) #[1] TRUE
+  identical(colnames(spl), colnames(uns)) #[1] TRUE
+
+# combine spliced and unspliced counts matrices - rowwise ("long")
+  rownames(uns) <- paste0(rownames(uns), "-U")
+  spl_plus_uns_long <- rbind(spl, uns)
+
+# combine spliced and unspliced counts matrices - columnwise ("wide")
+  rownames(uns) <- gsub("-U", "", rownames(uns))
+  identical(rownames(spl), rownames(uns)) #[1] TRUE
+  identical(colnames(spl), colnames(uns)) #[1] TRUE
+  colnames(spl) <- paste0(colnames(spl), "-S")
+  colnames(uns) <- paste0(colnames(uns), "-U")
+  spl_plus_uns_wide <- cbind(spl, uns)
+
+# calculate normalization factors on the long version of the matrix
+  spl_plus_uns_long_GE <- DGEList( spl_plus_uns_long )
+  spl_plus_uns_long_GE <- calcNormFactors( spl_plus_uns_long_GE )
+
+# create DGEList for wide version of the matrix
+  spl_plus_uns_wide_GE <- DGEList( spl_plus_uns_wide )
+  spl_plus_uns_wide_GE <- calcNormFactors( spl_plus_uns_wide_GE )
+
+# place the spl_plus_uns_long_GE factors into the spl_plus_uns_wide_GE DGEList
+  longNames <- colnames(spl_plus_uns_long_GE$counts)
+  wideNames <- colnames(spl_plus_uns_wide_GE$counts)
+  longFactors <- spl_plus_uns_long_GE$samples$norm.factors
+  #
+  # confirm I understand relationship between longNames and wideNames
+  # 
+  identical ( c(paste0(longNames, "-S"), paste0(longNames, "-U")), wideNames ) #[1] TRUE ... good
+  #
+  # put longFactors into the wide DGEList
+  # 
+  spl_plus_uns_wide_GE$samples$norm.factors <- c(longFactors, longFactors)
+
+# voom normalization 
+  mymetTop <- as.data.frame(met)
+  mymetBottom <- as.data.frame(met)
+  mymetTop$spliced <- TRUE
+  mymetBottom$spliced <- FALSE
+  rownames(mymetTop) <- paste0(mymetTop$SAMPLE_ISMMS, "-S")
+  rownames(mymetBottom) <- paste0(mymetBottom$SAMPLE_ISMMS, "-U")
+  mymet <- rbind(mymetTop, mymetBottom)
+  mymet <- mymet[colnames(spl_plus_uns_wide_GE),]
+  identical(colnames(spl_plus_uns_wide_GE), rownames(mymet)) #[1] TRUE
+  form <- ~ 0 + dePhe*spliced + (1|mymet_sex) + mymet_rin + neuronal + RNASeqMetrics_MEDIAN_3PRIME_BIAS + 
+              RNASeqMetrics_PCT_MRNA_BASES + (1|IID_ISMMS) + (1|mymet_depletionbatch) + 
+              InsertSizeMetrics_MEDIAN_INSERT_SIZE + AlignmentSummaryMetrics_STRAND_BALANCE_FIRST_OF_PAIR
+  vobjDream <- voomWithDreamWeights( spl_plus_uns_wide_GE, form, mymet, BPPARAM = MulticoreParam(5))
+  dreamFit <- dream( vobjDream, form, mymet, BPPARAM = MulticoreParam(5))
+  dreamFit <- eBayes(dreamFit, robust=TRUE)
+  de <- topTable(dreamFit, "dePhePM:splicedTRUE", number=nrow(vobjDream))
+  de <- data.table(gene = rownames(de), de)
+  ##
+  ## positive logFC - ratio of spliced to unspliced is higher in PM compared to LIV
+  ## or, positive logFC - means greater fraction of RNA is spliced in PM compared to LIV
+  ##
+
+# save
+  data$livpmDE$interaction <- de
+  data$interaction <- list(vobject = vobjDream)
+  saveRDS(data,file="salmon_spliced_unspliced_awc_01DEC2022.RDS")
+
+#+END_SRC
+
+
