@@ -1,0 +1,435 @@
+
+* Prepare the scRNAseq pseudobulk and voltammetry data for analysis (R)
+
+#+BEGIN_SRC R
+## This code block does the following: 
+##
+## (1) reads in the scRNAseq pseudobulk data (from Eric)
+## (2) reads in the volt data (from Eric)
+## (3) maps samples and individual IDs between the scRNAseq and volt data
+## (4) creates expression matrices that are subset to the samples with volt data
+## (5) saves the expression matrices to the file system
+##
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(SingleCellExperiment))
+  suppressMessages(library(data.table))
+  suppressMessages(library(variancePartition))
+  suppressMessages(library(limma))
+  suppressMessages(library(edgeR))
+  suppressMessages(library(Glimma))
+  suppressMessages(library(BiocParallel))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(patchwork))
+  Sys.setenv(OMP_NUM_THREADS = 20)
+  setwd("/sc/arion/projects/psychgen/lbp")
+
+# read in volt data
+  vlt <- fread("/sc/arion/projects/psychgen/lbp/data/RAW/rna/sc/chromium/FullAnalysis/VOC_study/volt_behave_LBP_R.csv")
+  ##
+  ## SUBJ_NUM   – simply the row number (each row is one subject’s data)
+  ## ID         – the actual subject ID number (same for both hemispheres)
+  ## SURG       – which surgery number, 1 or 2
+  ## ACC_COMP   – acceptance rate for the computer block
+  ## ACC_HUMAN  – acceptance rate for the human block
+  ## ACC_TOTAL  – acceptance rate for entire task
+  ## XX_BETA    – beta value for regression of NT trial by trial summary measure on trial offer level. 
+  ##              XX = DA (dopamine), SE (Serotonin), or NA (Noradrenalin)
+  ## XX_PVAL    – p-value for beta of the above regression.
+  ##
+  vlt <- data.table( iid=paste0("PT-0", vlt$ID), vlt)
+  vlt$ID <- NULL
+  vlt$SUBJ_NUM <- NULL
+  tmp <- vlt[,.N,iid]
+
+# read in rna data
+  pbAll <- readRDS("./data/RAW/rna/sc/chromium/FullAnalysis/LBP_scRNA_pbAll.RDS") ## all cells pseudobulk 
+  pbCT <- readRDS("./data/RAW/rna/sc/chromium/FullAnalysis/LBP_scRNA_pbCellType.RDS") ## cell type specific pseudobulk
+  pbCT$All <- pbAll
+
+# parse rna data
+  iter <- names(pbCT)
+  myrna <- list()
+  for (i in iter){
+      curexp <- counts(pbCT[[i]])
+      curmet <- colData(pbCT[[i]])
+      if (identical(colnames(curexp), rownames(curmet))){
+          colnames(curexp) <- curmet$Lab_ID 
+          curmet <- as.data.table(curmet)
+          curmet <- curmet[,.(sid=Lab_ID, iid=IndvID, hemisphere=ids, SampleID, Age, 
+                              mymet_postmortem, Batch, mymet_PD, Sex, 
+                              ncells, Mean_Reads_per_Cell, Fraction_Reads_in_Cells)]
+          keepme <- curmet[mymet_postmortem=="living"]$sid
+          curexp <- curexp[,keepme]
+          curmet <- curmet[mymet_postmortem=="living"]
+          curmet[,hemisphere:=substring(hemisphere, 8, 8)]
+          curmet[hemisphere=="L", hemisphere:="left"]
+          curmet[hemisphere=="R", hemisphere:="right"]
+          myrna[[i]] <- list("exp"=curexp, "met"=curmet)
+      } else {
+          print("error")
+      }
+  }
+
+# are all volt IID in rna IID?
+  curmet <- myrna$All$met
+  tmp1 <- unique(vlt$iid) 
+  tmp2 <- unique(curmet$iid)
+  sum(tmp1 %in% tmp2) ##[1] 9
+  length(tmp1) ##[1] 9 ... good, yes
+
+# do all volt samples have an rna sample?
+  curmet <- myrna$All$met
+  tmp1 <- vlt[,.N,iid][,.(iid, NVOLT=N)]
+  tmp2 <- curmet[,.N,iid][,.(iid, NRNA=N)]
+  nrow(merge(tmp1, tmp2)) == nrow(merge(tmp1, tmp2)[NVOLT==NRNA]) ##[1] TRUE ... good
+  nrow(vlt) ##[1] 15
+  sum(merge(tmp1, tmp2)$NVOLT) ##[1] 15
+
+# add sample id to volt data
+  curmet <- myrna$All$met[,.(sid, iid, hemisphere)]
+  has1 <- vlt[,.N,iid][N==1]$iid
+  has2 <- vlt[,.N,iid][N==2]$iid
+  vlt1 <- vlt[iid %in% has1]
+  vlt2 <- vlt[iid %in% has2]
+  vlt2[SURG==1, hemisphere:="left"]
+  vlt2[SURG==2, hemisphere:="right"]
+  vlt1$SURG <- NULL
+  vlt2$SURG <- NULL
+  vlt1 <- merge(curmet, vlt1) 
+  vlt2 <- merge(curmet, vlt2)
+  vlt <- rbind(vlt1, vlt2) 
+
+# relationships between volt metrics
+  p1 <- ggplot(vlt, aes(DA_BETA, SE_BETA, col=hemisphere)) + 
+       geom_point(size=3, alpha=0.5) + theme_base() +
+       theme(legend.position="none") 
+  p2 <- ggplot(vlt, aes(DA_BETA, NA_BETA, col=hemisphere)) + 
+       geom_point(size=3, alpha=0.5) + theme_base() +
+       theme(legend.position="none") 
+  p3 <- ggplot(vlt, aes(SE_BETA, NA_BETA, col=hemisphere)) + 
+       geom_point(size=3, alpha=0.5) + theme_base() +
+       theme(legend.position="none") 
+  p1 + p2 + p3
+
+# subset rna for samples in volt
+  keep <- unique(vlt$sid) 
+  iter <- names(myrna)
+  for (i in iter){
+      curexp <- myrna[[i]]$exp
+      curmet <- myrna[[i]]$met
+      curkep <- intersect(keep, colnames(curexp))
+      newexp <- curexp[,curkep]
+      newmet <- curmet[sid %in% curkep]
+      newmet <- merge(newmet, vlt)
+      newmet <- as.data.frame(newmet)
+      rownames(newmet) <- newmet$sid
+      newmet <- newmet[colnames(newexp),]
+      saveRDS(list("exp"=newexp, "met"=newmet), file=paste0("./scratch/volt_de_23oct2023/data/", i, ".RDS"))
+  }
+
+#+END_SRC
+
+
+* Normalize scRNAseq pseudobulk data with voom (unix)
+
+#+begin_src shell
+## This code block uses a pre-made R script to run voom normalization on the 
+##     expression matrices made in the previous code block
+
+# setup 
+  ml R/4.2.0
+  DIR=/sc/arion/projects/psychgen/lbp/scratch/volt_de_23oct2023
+  RSCRIPT=/sc/arion/projects/psychgen/lbp/scratch/volt_de_23oct2023/scripts/make_vobject.r
+
+# run
+  cd ${DIR}
+  for i in All Ast Exc1 Exc2 Exc3 Int1 Int2 MG NonNeu Oli OPC
+  do 
+    x=${DIR}/data/${i}.RDS  
+    y=${DIR}/data/vob_${i}.RDS  
+    mybsub psychgen `basename ${x}` 5000 1:30 premium 21 "Rscript ${RSCRIPT} ${x} ${y}"
+  done
+
+# check
+  cd ${DIR}
+  ls *.stdout |sed s/'.stdout'/''/g | sort | uniq > sent
+  fgrep -m1 Successfully *.stdout | awk -F":" '{print $1}' | sed s/'.stdout'/''/g | sort | uniq > success
+  comm -23 sent success | tr '.' ' ' | awk '{print $1}' > fail
+  wc -l sent success fail
+  ##  34 sent
+  ##  34 success
+  ##   0 fail
+
+# clean 
+  cd ${DIR}
+  rm *stderr
+  rm *stdout
+  rm sent success fail
+
+#+end_src
+
+
+* Run DE for volt metrics (unix)
+
+#+begin_src shell
+## This code block does the following (in pseudocode): 
+##
+## for each cell type in scRNAseq data
+##   for each neurotransmitter in volt data
+##     run differential expression with model `expression level ~ neurotransmitter activity + covariates`
+##
+
+# setup 
+  ml R/4.2.0
+  DIR=/sc/arion/projects/psychgen/lbp/scratch/volt_de_23oct2023
+  RSCRIPT1=/sc/arion/projects/psychgen/lbp/scratch/volt_de_23oct2023/scripts/run_de_DA.r
+  RSCRIPT2=/sc/arion/projects/psychgen/lbp/scratch/volt_de_23oct2023/scripts/run_de_SE.r
+  RSCRIPT3=/sc/arion/projects/psychgen/lbp/scratch/volt_de_23oct2023/scripts/run_de_NA.r
+
+# run
+  cd ${DIR}
+  for i in All Ast Exc1 Exc2 Exc3 Int1 Int2 MG NonNeu Oli OPC
+  do 
+    x=${DIR}/data/vob_${i}.RDS  
+    y=${DIR}/data/de_da_${i}.RDS  
+    mybsub psychgen `basename ${y}` 5000 1:30 premium 21 "Rscript ${RSCRIPT1} ${x} ${y}"
+    y=${DIR}/data/de_se_${i}.RDS  
+    mybsub psychgen `basename ${y}` 5000 1:30 premium 21 "Rscript ${RSCRIPT2} ${x} ${y}"
+    y=${DIR}/data/de_na_${i}.RDS  
+    mybsub psychgen `basename ${y}` 5000 1:30 premium 21 "Rscript ${RSCRIPT3} ${x} ${y}"
+  done
+
+# check
+  cd ${DIR}
+  ls *.stdout |sed s/'.stdout'/''/g | sort | uniq > sent
+  fgrep -m1 Successfully *.stdout | awk -F":" '{print $1}' | sed s/'.stdout'/''/g | sort | uniq > success
+  comm -23 sent success | tr '.' ' ' | awk '{print $1}' > fail
+  wc -l sent success fail
+  ##  33 sent
+  ##  33 success
+  ##   0 fail
+
+#+end_src
+
+
+* Evaluate the DE results (R)
+
+#+begin_src R
+
+# setup
+  rm(list=ls())
+  options(stringsAsFactors=F)
+  suppressMessages(library(data.table))
+  suppressMessages(library(ggplot2))
+  suppressMessages(library(ggthemes))
+  suppressMessages(library(patchwork))
+  suppressMessages(library(qvalue))
+  library(foreach)
+  library(parallel)
+  library(doMC)
+  options(cores = detectCores())
+  registerDoMC(16)
+  setwd("/sc/arion/projects/psychgen/lbp/scratch/volt_de_23oct2023/data/")
+  map <- fread("/sc/arion/projects/psychgen/lbp/files/gene_ids_ensembl2symbol_fromHUGO_10JUN2020.tsv",na="")
+  map <- map[,.(symbol=`Approved symbol`, gene=`Ensembl gene ID`)]
+  map <- map[!is.na(gene) & !is.na(symbol)]
+  map2 <- readRDS("/sc/arion/projects/psychgen/lbp/results/LBP_LIVPM_PROTEIN_DE_INPUT_DATA_AND_RESULTS_USING_LELQC_19OCT2022.RDS")$livpmDE
+  map2 <- map2[,.(gene, refseq)][!is.na(gene)]
+
+# make iterators to use below 
+  iter1 <- c("All", "Ast", "Exc1", "Exc2", "Exc3", "Int1", "Int2", "MG", "NonNeu", "Oli", "OPC")
+  iter2 <- c("da", "se", "na")
+  iter3 <- c()
+  for (i in iter2){
+      for (j in iter1){
+          iter3 <- c(iter3, paste(i, j, sep="_"))
+      }
+  }
+  iter4 <- as.data.table(t(combn(iter3, 2)))
+  iter5 <- c()
+  for (i in c("spliced", "unspliced", "protein")){
+      for (j in c("gpi", "stn")){
+          for (k in c("alpha", "beta", "gamma", "theta", "exponent")){
+              iter5 <- c(iter5, paste(i, j, k, sep="_"))
+          }
+      }
+  }
+  iter6 <- as.data.table(expand.grid("volt"= iter3,"mer" = iter5))
+  iter6$volt <- as.character(iter6$volt)
+  iter6$mer <- as.character(iter6$mer)
+
+# read in the volt de results
+  myres <- c()  
+  mypi1 <- c()
+  for (i in iter2){
+      for (j in iter1){
+          curRes <- readRDS(paste0("de_", i, "_", j, ".RDS"))$de
+          curPi1 <- 1 - qvalue(curRes$P.Value)$pi0 
+          ad1 <- data.table(cell=j, nt=i, curRes)
+          ad2 <- data.table(cell=j, nt=i, pi1=curPi1)
+          myres <- rbind(myres, ad1)
+          mypi1 <- rbind(mypi1, ad2)
+      }
+  }
+
+
+# compare the volt de signatures with one another
+  myvlt <- foreach(i = 1:nrow(iter4), .combine = rbind )%dopar%{
+      if (i %% 10 == 0 ) cat("\r",i," of ", nrow(iter4),"\t\t")
+      x1 <- unlist(strsplit(iter3[i]$V1, split="_"))
+      x2 <- unlist(strsplit(iter3[i]$V2, split="_"))
+      i1 <- x1[1]
+      j1 <- x1[2]
+      i2 <- x2[1]
+      j2 <- x2[2]
+      d1 <- myres[cell==j1 & nt==i1][,.(gene, logFC1=logFC, p1=P.Value)]
+      d2 <- myres[cell==j2 & nt==i2][,.(gene, logFC2=logFC, p2=P.Value)]
+      d3 <- merge(d1, d2, by="gene")
+      d3[,up1:=FALSE]
+      d3[,up2:=FALSE]
+      d3[,down1:=FALSE]
+      d3[,down2:=FALSE]
+      d3[logFC1>0 & p1<0.05, up1:=TRUE]
+      d3[logFC2>0 & p2<0.05, up2:=TRUE]
+      d3[logFC1<0 & p1<0.05, down1:=TRUE]
+      d3[logFC2<0 & p2<0.05, down2:=TRUE]
+      d3[,up1:=factor(up1, levels=c("TRUE", "FALSE"))]
+      d3[,up2:=factor(up2, levels=c("TRUE", "FALSE"))]
+      d3[,down1:=factor(down1, levels=c("TRUE", "FALSE"))]
+      d3[,down2:=factor(down2, levels=c("TRUE", "FALSE"))]
+      ft1 <- fisher.test(table(d3$up1, d3$up2))
+      ft2 <- fisher.test(table(d3$down1, d3$down2))      
+      ft3 <- fisher.test(table(d3$up1, d3$down2))      
+      ft4 <- fisher.test(table(d3$down1, d3$up2))      
+      cur <- cor.test(d3$logFC1, d3$logFC2, method="spearman")
+      ad0 <- data.table(nt1=i1, cell1=j1, nt2=i2, cell2=j2, test="spearman", stat="rho", value=cur$estimate, p=cur$p.value)
+      ad1 <- data.table(nt1=i1, cell1=j1, nt2=i2, cell2=j2, test="fisher_uu", stat="or", value=ft1$estimate, p=ft1$p.value)
+      ad2 <- data.table(nt1=i1, cell1=j1, nt2=i2, cell2=j2, test="fisher_dd", stat="or", value=ft2$estimate, p=ft2$p.value)
+      ad3 <- data.table(nt1=i1, cell1=j1, nt2=i2, cell2=j2, test="fisher_ud", stat="or", value=ft3$estimate, p=ft3$p.value)
+      ad4 <- data.table(nt1=i1, cell1=j1, nt2=i2, cell2=j2, test="fisher_du", stat="or", value=ft4$estimate, p=ft4$p.value)
+      out <- rbind(ad0, ad1, ad2, ad3, ad4)
+      out
+  }
+  myvlt[,ntMatch:=FALSE]
+  myvlt[,cellMatch:=FALSE]
+  myvlt[nt1==nt2,ntMatch:=TRUE]
+  myvlt[cell1==cell2,cellMatch:=TRUE]
+  myvlt <- merge(myvlt, mypi1[,.(nt1=nt, cell1=cell, pi11=pi1)])
+  myvlt <- merge(myvlt, mypi1[,.(nt2=nt, cell2=cell, pi12=pi1)], by=c("nt2", "cell2"))
+  ##
+  ## look at distribution of de signature similarity metrics
+  ##
+  ggplot( myvlt[stat=="rho"], aes(value) ) + 
+    geom_histogram() + facet_wrap(~ntMatch + cellMatch, ncol=1, scales="free_y")
+    ## 
+    ## is the right shift in the third histogram important?
+    ##
+
+# read in the microelectrode recording (mer) de signatures
+  mer <- readRDS("/sc/arion/projects/psychgen/lbp/results/mer/mer_rnaseq_de_valentineMerData_ALL_31MAY2022_DE19FEB2023.RDS")
+
+# compare mer de signature to lbp volt de signatures
+  myepy <- foreach(i = 1:nrow(iter6), .combine = rbind )%dopar%{
+      if (i %% 10 == 0 ) cat("\r",i," of ", nrow(iter6),"\t\t")
+      x1 <- unlist(strsplit(iter6[i]$volt, split="_"))
+      x2 <- unlist(strsplit(iter6[i]$mer, split="_"))
+      i1 <- x1[1]
+      j1 <- x1[2]
+      i2 <- x2[1]
+      j2 <- x2[2]
+      k2 <- x2[3]
+      d1 <- myres[cell==j1 & nt==i1][,.(symbol=gene, logFC1=logFC, p1=P.Value)]
+      d1 <- merge(map, d1, by="symbol")[,.(gene, logFC1, p1)]
+      if (i2!="protein"){
+          d2 <- mer[[i2]][[j2]][[k2]][,.(gene, logFC2=logFC, p2=P.Value)]
+      } else { 
+          d2 <- mer[[i2]][[j2]][[k2]][,.(refseq=gene, logFC2=logFC, p2=P.Value)]
+          d2 <- merge(map2, d2, by="refseq")[,.(gene, logFC2, p2)]
+          d2 <- d2[gene %in% d2[,.N,gene][N==1]$gene]
+      }
+      d3 <- merge(d1, d2, by="gene")
+      d3[,up1:=FALSE]
+      d3[,up2:=FALSE]
+      d3[,down1:=FALSE]
+      d3[,down2:=FALSE]
+      d3[logFC1>0 & p1<0.05, up1:=TRUE]
+      d3[logFC2>0 & p2<0.05, up2:=TRUE]
+      d3[logFC1<0 & p1<0.05, down1:=TRUE]
+      d3[logFC2<0 & p2<0.05, down2:=TRUE]
+      d3[,up1:=factor(up1, levels=c("TRUE", "FALSE"))]
+      d3[,up2:=factor(up2, levels=c("TRUE", "FALSE"))]
+      d3[,down1:=factor(down1, levels=c("TRUE", "FALSE"))]
+      d3[,down2:=factor(down2, levels=c("TRUE", "FALSE"))]
+      ft1 <- fisher.test(table(d3$up1, d3$up2))
+      ft2 <- fisher.test(table(d3$down1, d3$down2))      
+      ft3 <- fisher.test(table(d3$up1, d3$down2))      
+      ft4 <- fisher.test(table(d3$down1, d3$up2))      
+      po1 <- 1 - qvalue(d3$p1)$pi0 
+      po2 <- 1 - qvalue(d3$p2)$pi0 
+      cur <- cor.test(d3$logFC1, d3$logFC2, method="spearman")
+      ad0 <- data.table(nt1=i1, cell1=j1, ome2=i2, targ2=j2, metric2=k2, test="spearman", stat="rho", value=cur$estimate, p=cur$p.value)
+      ad1 <- data.table(nt1=i1, cell1=j1, ome2=i2, targ2=j2, metric2=k2, test="fisher_uu", stat="or", value=ft1$estimate, p=ft1$p.value)
+      ad2 <- data.table(nt1=i1, cell1=j1, ome2=i2, targ2=j2, metric2=k2, test="fisher_dd", stat="or", value=ft2$estimate, p=ft2$p.value)
+      ad3 <- data.table(nt1=i1, cell1=j1, ome2=i2, targ2=j2, metric2=k2, test="fisher_ud", stat="or", value=ft3$estimate, p=ft3$p.value)
+      ad4 <- data.table(nt1=i1, cell1=j1, ome2=i2, targ2=j2, metric2=k2, test="fisher_du", stat="or", value=ft4$estimate, p=ft4$p.value)
+      out <- rbind(ad0, ad1, ad2, ad3, ad4)
+      out$pi1_1 <- po1
+      out$pi1_2 <- po2
+      out
+  }
+  ##
+  ## look at distribution of de signature similarity metrics
+  ##
+  ggplot( myepy[stat=="rho"], aes(value) ) + 
+    geom_histogram() 
+  ggplot( myepy[stat=="rho"][pi1_1>0 & pi1_2>0], aes(value) ) + 
+    geom_histogram() ## something interesting happening at abs(rho) > 0.25?
+  myepy[stat=="rho"][pi1_1>0 & pi1_2>0][abs(value)>0.25] ## looks like something going on with Exc2
+
+# compare the volt de signatures to the mature rna livpm de signature
+  rna <- readRDS("/sc/arion/projects/psychgen/lbp/data/RAW/rna/bulk/fromSema4/CompiledData/salmon_spliced_unspliced_awc_01DEC2022.RDS")
+  lpm <- rna$livpmDE$spliced[,.(gene, logFC1=logFC, p1=adj.P.Val, liv=FALSE, pm=FALSE, livpm=FALSE)]
+  lpm[logFC1<0 & p1<0.05, liv:=TRUE]
+  lpm[logFC1>0 & p1<0.05, pm:=TRUE]
+  lpm[p1<0.05, livpm:=TRUE]
+  lpm <- lpm[,.(gene, liv, pm, livpm, logFC1, p1)]
+  lpm <- merge(lpm, map)
+  mylpm <- c()  
+  for (i in iter2){
+      for (j in iter1){
+          dx <- myres[cell==j & nt==i][,.(symbol=gene, logFC2=logFC, p2=P.Value)]
+          d3 <- merge(dx, lpm)
+          d3[,up1:=FALSE]
+          d3[,up2:=FALSE]
+          d3[,down1:=FALSE]
+          d3[,down2:=FALSE]
+          d3[logFC1>0 & p1<0.05, up1:=TRUE]
+          d3[logFC2>0 & p2<0.05, up2:=TRUE]
+          d3[logFC1<0 & p1<0.05, down1:=TRUE]
+          d3[logFC2<0 & p2<0.05, down2:=TRUE]
+          d3[,up1:=factor(up1, levels=c("TRUE", "FALSE"))]
+          d3[,up2:=factor(up2, levels=c("TRUE", "FALSE"))]
+          d3[,down1:=factor(down1, levels=c("TRUE", "FALSE"))]
+          d3[,down2:=factor(down2, levels=c("TRUE", "FALSE"))]
+          ft1 <- fisher.test(table(d3$up1, d3$up2))
+          ft2 <- fisher.test(table(d3$down1, d3$down2))      
+          ft3 <- fisher.test(table(d3$up1, d3$down2))      
+          ft4 <- fisher.test(table(d3$down1, d3$up2))    
+          cur <- cor.test(d3$logFC1, d3$logFC2, method="spearman")
+          ad0 <- data.table(nt=i, cell=j, test="spearman", stat="rho", value=cur$estimate, p=cur$p.value)
+          ad1 <- data.table(nt=i, cell=j, test="fisher_uu", stat="or", value=ft1$estimate, p=ft1$p.value)
+          ad2 <- data.table(nt=i, cell=j, test="fisher_dd", stat="or", value=ft2$estimate, p=ft2$p.value)
+          ad3 <- data.table(nt=i, cell=j, test="fisher_ud", stat="or", value=ft3$estimate, p=ft3$p.value)
+          ad4 <- data.table(nt=i, cell=j, test="fisher_du", stat="or", value=ft4$estimate, p=ft4$p.value)
+          mylpm <- rbind(mylpm, ad0, ad1, ad2, ad3, ad4)
+      }
+  }
+
+#+end_src
+
+
+
